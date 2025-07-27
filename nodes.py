@@ -10,34 +10,39 @@ def handle_whitespace(string: str):
 
 # Node class definition
 class MyCustomNode:
-    RETURN_TYPES = ()  # This can be customized based on your node's return types
+    RETURN_TYPES = ()  # This specifies that the output will be text
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "MyCustomCategory"  # A category for the node, adjust as needed
+    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
+    LABEL = "Extractable Text Node"  # Default label text
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Define the types of inputs your node accepts
+        # Define the types of inputs your node accepts (single "text" input)
         return {
             "required": {
-                "input_image": ("IMAGE", ),  # Adjust as per your needs
-                "filename": ("STRING", {"default": "output_image", "multiline": False}),
-                "quality": ("INT", {"default": 90, "min": 1, "max": 100}),
+                "text": ("STRING", {"multiline": True}),
             },
         }
 
-    OUTPUT_NODE = True  # If this is an output node (e.g., saves or returns images)
+    @classmethod
+    def IS_CHANGED(cls, text, autorefresh):
+        # Force re-evaluation of the node
+        if autorefresh == "Yes":
+            return float("NaN")
+
+    OUTPUT_NODE = False  # Not an output node (does not save files or images)
     
-    def process(self, input_image, filename, quality):
-        # Implement the logic to process your input image
-        output_path = f"/path/to/save/{filename}.png"
+    def process(self, text):
+        # Ensure the input is treated as text
+        cleaned_text = handle_whitespace(text)
         
-        # Convert image and save (this is just a simple example)
-        img = Image.fromarray(input_image)
-        img.save(output_path, quality=quality)
+        # Update the LABEL to display the input text directly on the node (for real-time view)
+        self.LABEL = f"Text: {cleaned_text[:30]}..."  # Show the first 30 characters for brevity
+        
+        # Return the processed text (can be used later in the pipeline if needed)
+        return {"output": cleaned_text}
 
-        # You can return the output path or other details
-        return {"output": output_path}
-
+# Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
-    "Extractable Text Node": MyCustomNode,  # Replace "My Custom Node" with the name you want to show in ComfyUI
+    "Extractable Text Node": MyCustomNode,  # The name that will show in the UI
 }
