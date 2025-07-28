@@ -34,8 +34,8 @@ class ExtractableTextNode:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
-                "path": ("STRING", {"default": '', "multiline": False}),
+                "filename_prefix": ("STRING", {"default": f'', "multiline": False}),
+                "path": ("STRING", {"default": f'', "multiline": False}),
                 "description": ("STRING", {"multiline": True}),
             },
         }
