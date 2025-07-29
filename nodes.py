@@ -45,7 +45,7 @@ class ExtractableTextNode:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, autorefresh):
+    def IS_CHANGED(cls, images, description, path, filename_prefix):
         # Force re-evaluation of the node
             return float("NaN")
 
@@ -79,68 +79,7 @@ class ExtractableTextNode:
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             paths.append(filename)
             img_count += 1
-        return paths
 
-# Node class definition
-class ExtractableTextNode:
-    def __init__(self):
-        self.output_dir = folder_paths.output_directory
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        # Define the types of inputs your node accepts (single "text" input)
-        return {
-            "required": {
-                "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
-                "path": ("STRING", {"default": f'', "multiline": False}),
-                "description": ("STRING", {"multiline": True}),
-            },
-        }
-    
-    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("fullpath",)  # This specifies that the output will be text
-    FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
-    LABEL = "Extractable Text Node"  # Default label text
-    OUTPUT_NODE = True
-
-    @classmethod
-    def IS_CHANGED(cls, autorefresh):
-        # Force re-evaluation of the node
-            return float("NaN")
-
-    
-    def process(self, images, description, path, filename_prefix):
-        # Ensure the input is treated as text
-        output_path = os.path.join(self.output_dir, path)
-
-        if output_path.strip() != '':
-            if not os.path.exists(output_path.strip()):
-                print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
-                os.makedirs(output_path, exist_ok=True)  
-
-        self.save_images(images, output_path, filename_prefix, description)
-        return(output_path.strip(),)
-
-    def save_images(self, images, output_path, filename_prefix, description) -> list[str]:
-        img_count = 1
-        paths = list()
-        for image in images:
-            i = 255. * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-
-            if images.size()[0] > 1:
-                filename_prefix += "_{:02d}".format(img_count)
-
-            filename = f"{filename_prefix}.png"
-            metadata = PngInfo()
-            metadata.add_text("description", description)
-            img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
-            paths.append(filename)
-            img_count += 1
-        return paths
-    
 
 # Node class definition
 class SaveImgToFolder:
@@ -161,14 +100,14 @@ class SaveImgToFolder:
         }
     
     RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("path",)
+    RETURN_NAMES = ("fullpath",)
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls):
+    def IS_CHANGED(cls, images, description, path, filename_prefix):
         # Force re-evaluation of the node
             return float("NaN")
 
@@ -184,8 +123,7 @@ class SaveImgToFolder:
                 os.makedirs(output_path, exist_ok=True)  
 
         self.save_images(images, output_path, filename_prefix)
-        subfolder = os.path.normpath(path)
-        return (path, )
+        return (output_path.strip(),)
 
 
     def save_images(self, images, output_path, filename_prefix) -> list[str]:
