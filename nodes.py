@@ -106,6 +106,10 @@ class SaveImgToFolder:
                 "images": ("IMAGE", ),
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
+                "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
+            "hidden": {
+                "extra_pnginfo": "EXTRA_PNGINFO"
+            },
             },
         }
     
@@ -117,7 +121,7 @@ class SaveImgToFolder:
     OUTPUT_NODE = True
 
     
-    def process(self, images, path, filename):
+    def process(self, images, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
         self.output_path = output_path
@@ -127,11 +131,11 @@ class SaveImgToFolder:
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename)
+        self.save_images(images, output_path, filename,extra_pnginfo, include_workflow)
         return (output_path.strip(),)
 
 
-    def save_images(self, images, output_path, filename_prefix) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix,extra_pnginfo, include_workflow) -> list[str]:
         img_count = 1
         for image in images:
             i = 255. * image.cpu().numpy()
@@ -142,6 +146,12 @@ class SaveImgToFolder:
 
             filename = f"{filename_prefix}.png"
             metadata = PngInfo()
+
+            if include_workflow is True:
+                if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             img_count += 1
 
@@ -190,10 +200,55 @@ class LoadImageWithDescription:
                 print("WARN: No description found in PNG")
         return(image, image_name, parameters)
                
+# Node class definition
+class GetImageDescription:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def INPUT_TYPES(s):
+        input_dir = folder_paths.get_input_directory()
+        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+        return {
+            "required":{
+                        "image": ("IMAGE", ),
+            },
+        }
+
+    
+    RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("image","name","description")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Get Description From Image"  # Default label text
+    OUTPUT_NODE = True
+
+
+    
+    def process(self, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        image_name = ''
+        with open(image_path,'rb') as file:
+            img = Image.open(file)
+            extension = image_path.split('.')[-1]
+
+
+        parameters = ""
+        comfy = False
+        if extension.lower() == 'png':
+            try:
+                parameters = img.info['description']
+            except:
+                parameters = ""
+                print("WARN: No description found in PNG")
+        return(image, image_name, parameters)
+
+
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
     "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
+    "Get Image Description": GetImageDescription,
 }
