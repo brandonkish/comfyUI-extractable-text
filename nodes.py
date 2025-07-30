@@ -3,6 +3,7 @@ import hashlib
 from datetime import datetime
 import json
 import piexif
+import torch
 import piexif.helper
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
@@ -131,8 +132,57 @@ class SaveImgToFolder:
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             img_count += 1
 
+
+# Node class definition
+class LoadImageWithExtractableText:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def INPUT_TYPES(s):
+        input_dir = folder_paths.get_input_directory()
+        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+        return {"required":
+                    {
+                        "path": ("STRING", {"default": f'', "multiline": False}),   
+                    },
+                }
+    
+    RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("image","description","name")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
+    LABEL = "Extractable Text Node"  # Default label text
+    OUTPUT_NODE = True
+
+
+    
+    def process(self, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        image_name = os.path.splitext(os.path.basename(image_path))[0]
+        with open(image_path,'rb') as file:
+            img = Image.open(file)
+            extension = image_path.split('.')[-1]
+            image = img.convert("RGB")
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image)[None,]
+
+        parameters = ""
+        comfy = False
+        if extension.lower() == 'png':
+            try:
+                parameters = img.info['description']
+                if not parameters.startswith("Positive prompt"):
+                    parameters = "Positive prompt: " + parameters
+            except:
+                parameters = ""
+                print("WARN: No description found in PNG")
+        return(image, image_name, parameters)
+               
+
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Extractable Text Node": ExtractableTextNode,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
+    "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
 }
