@@ -37,7 +37,7 @@ class SaveImageWithDescription:
                 "description": ("STRING", {"multiline": True}),
             },
             "hidden": {
-                "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"
+                "extra_pnginfo": "EXTRA_PNGINFO"
             },
         }
     
