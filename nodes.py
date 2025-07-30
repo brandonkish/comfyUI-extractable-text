@@ -22,7 +22,7 @@ def handle_whitespace(string: str):
     return string.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
 # Node class definition
-class ExtractableTextNode:
+class SaveImageWithDescription:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
 
@@ -134,7 +134,7 @@ class SaveImgToFolder:
 
 
 # Node class definition
-class LoadImageWithExtractableText:
+class LoadImageWithDescription:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
 
@@ -180,7 +180,7 @@ class LoadImageWithExtractableText:
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
-    "Extractable Text Node": ExtractableTextNode,  # The name that will show in the UI
+    "Save Image With Description": ExtractableTextNode,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
-    "Load Image With Description": LoadImageWithExtractableText,  # The name that will show in the UI
+    "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
 }
