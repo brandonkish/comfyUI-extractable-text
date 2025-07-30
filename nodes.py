@@ -41,8 +41,8 @@ class ExtractableTextNode:
     RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
     RETURN_NAMES = ("fullpath",)
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
-    LABEL = "Extractable Text Node"  # Default label text
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Save Image With Description"  # Default label text
     OUTPUT_NODE = True
 
 
@@ -99,7 +99,7 @@ class SaveImgToFolder:
     RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
     RETURN_NAMES = ("fullpath",)
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
     OUTPUT_NODE = True
 
@@ -151,8 +151,8 @@ class LoadImageWithExtractableText:
     RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
     RETURN_NAMES = ("image","description","name")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
-    LABEL = "Extractable Text Node"  # Default label text
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Load Image With Description"  # Default label text
     OUTPUT_NODE = True
 
 
