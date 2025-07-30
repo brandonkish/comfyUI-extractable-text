@@ -32,9 +32,12 @@ class SaveImageWithDescription:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
                 "description": ("STRING", {"multiline": True}),
+            },
+            "hidden": {
+                "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"
             },
         }
     
@@ -47,20 +50,21 @@ class SaveImageWithDescription:
 
 
     
-    def process(self, images, description, path, filename_prefix):
+    def process(self, images, description, path, filename, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
+
 
         if output_path.strip() != '':
             if not os.path.exists(output_path.strip()):
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename_prefix, description)
+        self.save_images(images, output_path, filename, description, extra_pnginfo)
         return(output_path.strip(),)
 
 
-    def save_images(self, images, output_path, filename_prefix, description) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo) -> list[str]:
         img_count = 1
         paths = list()
         for image in images:
@@ -73,6 +77,11 @@ class SaveImageWithDescription:
             filename = f"{filename_prefix}.png"
             metadata = PngInfo()
             metadata.add_text("description", description)
+
+            if extra_pnginfo is not None:
+                    for x in extra_pnginfo:
+                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+            
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             paths.append(filename)
             img_count += 1
@@ -91,7 +100,7 @@ class SaveImgToFolder:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
             },
         }
@@ -104,7 +113,7 @@ class SaveImgToFolder:
     OUTPUT_NODE = True
 
     
-    def process(self, images, path, filename_prefix):
+    def process(self, images, path, filename):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
         self.output_path = output_path
@@ -114,7 +123,7 @@ class SaveImgToFolder:
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename_prefix)
+        self.save_images(images, output_path, filename)
         return (output_path.strip(),)
 
 
