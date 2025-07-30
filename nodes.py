@@ -44,10 +44,6 @@ class ExtractableTextNode:
     LABEL = "Extractable Text Node"  # Default label text
     OUTPUT_NODE = True
 
-    @classmethod
-    def IS_CHANGED(cls, images, description, path, filename_prefix):
-        # Force re-evaluation of the node
-            return float("NaN")
 
     
     def process(self, images, description, path, filename_prefix):
@@ -105,11 +101,6 @@ class SaveImgToFolder:
     CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
     OUTPUT_NODE = True
-
-    @classmethod
-    def IS_CHANGED(cls, images, description, path, filename_prefix):
-        # Force re-evaluation of the node
-            return float("NaN")
 
     
     def process(self, images, path, filename_prefix):
