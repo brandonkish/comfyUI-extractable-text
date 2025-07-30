@@ -397,7 +397,7 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 
-!Extractor\bin\Release\net9.0-windows
-!Extractor\bin\Release\net9.0-windows\*.dll
-!Extractor\bin\Release\net9.0-windows\*.exe
-!Extractor\bin\Release\net9.0-windows\*.pdb
+!Extractor/bin/Release/net9.0-windows
+!Extractor/bin/Release/net9.0-windows/*.dll
+!Extractor/bin/Release/net9.0-windows/*.exe
+!Extractor/bin/Release/net9.0-windows/*.pdb
