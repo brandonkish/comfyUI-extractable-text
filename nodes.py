@@ -34,6 +34,7 @@ class SaveImageWithDescription:
                 "images": ("IMAGE", ),
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
+                "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
                 "description": ("STRING", {"multiline": True}),
             },
             "hidden": {
@@ -50,7 +51,7 @@ class SaveImageWithDescription:
 
 
     
-    def process(self, images, description, path, filename, extra_pnginfo=None):
+    def process(self, images, description, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
         metadata = None
@@ -62,11 +63,11 @@ class SaveImageWithDescription:
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename, description, extra_pnginfo)
+        self.save_images(images, output_path, filename, description, extra_pnginfo, include_workflow)
         return(output_path.strip(),)
 
 
-    def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo, include_workflow) -> list[str]:
         img_count = 1
         paths = list()
         for image in images:
@@ -80,9 +81,10 @@ class SaveImageWithDescription:
             metadata = PngInfo()
             metadata.add_text("description", description)
 
-            if extra_pnginfo is not None:
-                    for x in extra_pnginfo:
-                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+            if include_workflow is True:
+                if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
             
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             paths.append(filename)
@@ -160,7 +162,7 @@ class LoadImageWithDescription:
 
     
     RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("image","description","name")
+    RETURN_NAMES = ("image","name","description")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Load Image With Description"  # Default label text
