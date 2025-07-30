@@ -27,7 +27,7 @@
                 AllowDrop="True"
                 DragOver="Window_DragOver"
                 Drop="Window_Drop">
-            <TextBlock Text="Drop PNG Here"
+            <TextBlock Text="Drop PNG(s) Here To Extract Text File"
                        HorizontalAlignment="Center"
                        VerticalAlignment="Center"
                        FontSize="16"
