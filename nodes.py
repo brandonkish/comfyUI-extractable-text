@@ -184,5 +184,5 @@ class LoadImageWithExtractableText:
 NODE_CLASS_MAPPINGS = {
     "Extractable Text Node": ExtractableTextNode,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
-    "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
+    "Load Image With Description": LoadImageWithExtractableText,  # The name that will show in the UI
 }
