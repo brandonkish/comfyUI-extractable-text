@@ -53,6 +53,8 @@ class SaveImageWithDescription:
     def process(self, images, description, path, filename, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
+        metadata = None
+        metadata = PngInfo()
 
 
         if output_path.strip() != '':
