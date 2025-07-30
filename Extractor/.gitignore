@@ -49,10 +49,7 @@ Generated\ Files/
 TestResult.xml
 nunit-*.xml
 
-# Build Results of an ATL Project
-[Dd]ebugPS/
-[Rr]eleasePS/
-dlldata.c
+
 
 # Benchmark Results
 BenchmarkDotNet.Artifacts/
@@ -399,3 +396,8 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+!bin\Release
+!bin\Release*.dll
+!bin\Release*.exe
+!bin\Release*.pdb
