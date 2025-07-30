@@ -149,7 +149,7 @@ class LoadImageWithExtractableText:
 
     
     RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("image","description","name")
+    RETURN_NAMES = ("image","name", "description")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
     LABEL = "Extractable Text Node"  # Default label text
