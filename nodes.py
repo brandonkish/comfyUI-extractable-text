@@ -142,11 +142,11 @@ class LoadImageWithExtractableText:
     def INPUT_TYPES(s):
         input_dir = folder_paths.get_input_directory()
         files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
-        return {"required":
-                    {
-                        "path": ("STRING", {"default": f'', "multiline": False}),   
-                    },
-                }
+        return {
+            "required":
+                    {"image": (sorted(files), {"image_upload": True})},
+        }
+
     
     RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
     RETURN_NAMES = ("image","description","name")
@@ -172,8 +172,6 @@ class LoadImageWithExtractableText:
         if extension.lower() == 'png':
             try:
                 parameters = img.info['description']
-                if not parameters.startswith("Positive prompt"):
-                    parameters = "Positive prompt: " + parameters
             except:
                 parameters = ""
                 print("WARN: No description found in PNG")
