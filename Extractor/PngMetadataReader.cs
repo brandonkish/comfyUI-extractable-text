@@ -33,7 +33,7 @@ public class PngMetadataReader
             while (true)
             {
                 Chunk chunk = Chunk.GetNext(image);
-                if (!chunk.Type.Equals(""))
+                if (!chunk.Type.Equals("tEXt"))
                     continue;
                 if(!chunk.Data.StartsWith("description", StringComparison.OrdinalIgnoreCase))
                     continue;

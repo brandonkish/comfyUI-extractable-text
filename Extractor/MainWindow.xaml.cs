@@ -74,7 +74,7 @@ namespace METAVACE
                     if (string.IsNullOrEmpty(PngImage.Description))
                         continue;
 
-                    Description.Text = PngImage.Description;
+                    Description.Text = RemoveDescriptionWordAndNullChar(PngImage.Description);
                     WriteDescriptionToFile(GetTextFilePathFromPng(pngFile), PngImage.Description);
 
                 }
