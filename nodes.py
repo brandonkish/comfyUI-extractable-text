@@ -107,9 +107,9 @@ class SaveImgToFolder:
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
                 "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
+            },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO"
-            },
             },
         }
     
