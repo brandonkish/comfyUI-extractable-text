@@ -2,15 +2,25 @@ import os
 import hashlib
 from datetime import datetime
 import json
-import piexif
 import torch
-import piexif.helper
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 import numpy as np
 import folder_paths
 import comfy.sd
 from nodes import MAX_RESOLUTION
+import base64
+import json
+import math
+import numpy as np
+import torch
+try:
+    import piexif.helper
+    import piexif
+    from .exif.exif import read_info_from_image_stealth
+    piexif_loaded = True
+except ImportError:
+    piexif_loaded = False
 
 
 
@@ -42,8 +52,8 @@ class SaveImageWithDescription:
             },
         }
     
-    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("fullpath",)
+    RETURN_TYPES = ("STRING","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("folderpath", "filepath")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Save Image With Description"  # Default label text
@@ -54,8 +64,6 @@ class SaveImageWithDescription:
     def process(self, images, description, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
-        metadata = None
-        metadata = PngInfo()
 
 
         if output_path.strip() != '':
@@ -64,7 +72,7 @@ class SaveImageWithDescription:
                 os.makedirs(output_path, exist_ok=True)  
 
         self.save_images(images, output_path, filename, description, extra_pnginfo, include_workflow)
-        return(output_path.strip(),)
+        return (output_path.strip(),output_path.strip() + "\\" + filename.strip() + ".png")
 
 
     def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo, include_workflow) -> list[str]:
@@ -113,8 +121,8 @@ class SaveImgToFolder:
             },
         }
     
-    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("fullpath",)
+    RETURN_TYPES = ("STRING","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("folderpath", "filepath")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
@@ -132,7 +140,7 @@ class SaveImgToFolder:
                 os.makedirs(output_path, exist_ok=True)  
 
         self.save_images(images, output_path, filename,extra_pnginfo, include_workflow)
-        return (output_path.strip(),)
+        return (output_path.strip(),output_path.strip() + "\\" + filename.strip() + ".png")
 
 
     def save_images(self, images, output_path, filename_prefix,extra_pnginfo, include_workflow) -> list[str]:
@@ -191,7 +199,6 @@ class LoadImageWithDescription:
             image = torch.from_numpy(image)[None,]
 
         parameters = ""
-        comfy = False
         if extension.lower() == 'png':
             try:
                 parameters = img.info['description']
@@ -201,18 +208,19 @@ class LoadImageWithDescription:
         return(image, image_name, parameters)
                
 # Node class definition
-class GetImageDescription:
+class LoadImageWithDescriptionByPath:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
 
     @classmethod
     def INPUT_TYPES(s):
         input_dir = folder_paths.get_input_directory()
-        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
         return {
-            "required":{
-                        "image": ("IMAGE", ),
-            },
+            "required":
+                    {
+                        "folder": ("STRING", {"default": f'', "multiline": False}),
+                        "image_name": ("STRING", {"default": f'', "multiline": False}),
+                    },
         }
 
     
@@ -220,35 +228,44 @@ class GetImageDescription:
     RETURN_NAMES = ("image","name","description")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
-    LABEL = "Get Description From Image"  # Default label text
+    LABEL = "Load Image With Description"  # Default label text
     OUTPUT_NODE = True
 
 
     
-    def process(self, image):
-        image_path = folder_paths.get_annotated_filepath(image)
-        image_name = ''
-        with open(image_path,'rb') as file:
-            img = Image.open(file)
-            extension = image_path.split('.')[-1]
-
-
+    def process(self, folder, image_name):
         parameters = ""
-        comfy = False
-        if extension.lower() == 'png':
-            try:
-                parameters = img.info['description']
-            except:
-                parameters = ""
-                print("WARN: No description found in PNG")
+        image = ""
+        if folder is not None:
+            if image_name is not None:
+                image_path = os.path.join(self.output_dir, folder, f"{image_name}.png")
+                with open(image_path,'rb') as file:
+                    img = Image.open(file)
+                    extension = image_path.split('.')[-1]
+                    image = img.convert("RGB")
+                    image = np.array(image).astype(np.float32) / 255.0
+                    image = torch.from_numpy(image)[None,]
+
+                if extension.lower() == 'png':
+                    try:
+                        parameters = img.info['description']
+                    except:
+                        parameters = ""
+                        print("WARN: No description found in PNG")
+            else:
+                image_name = ""
+        else:
+            folder = ""
+            
         return(image, image_name, parameters)
 
 
+  
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
     "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
-    "Get Image Description": GetImageDescription,
+    "Load Image With Description By Path": LoadImageWithDescriptionByPath,
 }
