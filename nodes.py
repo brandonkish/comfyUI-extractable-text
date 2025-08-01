@@ -14,6 +14,8 @@ import json
 import math
 import numpy as np
 import torch
+import random
+from nodes import SaveImage
 try:
     import piexif.helper
     import piexif
@@ -259,6 +261,46 @@ class LoadImageWithDescriptionByPath:
             
         return(image, image_name, parameters)
 
+class AIVisionPreview:
+    def __init__(self):
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
+        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        self.compress_level = 1
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "description": ("STRING", {"default": f'image', "multiline": True}),
+            },
+            "hidden": {
+                "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("image", "description")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "AI Vision Preview"  # Default label text
+    OUTPUT_NODE = True
+
+    def process(self, images, description, prompt, extra_pnginfo):
+        # Only preview the first image in the batch for performance/UI clarity
+        image_preview = [{
+            "image": images[0],  # Tensor image (1, H, W, C)
+            "type": self.type,
+            "filename": f"{description}.png",  # or any identifier
+            "subfolder": "AIVisionPreview",
+        }]
+
+        return (
+            images,
+            description,
+            { "ui": { "images": image_preview } }  # <--- this enables UI preview
+        )
 
   
 
@@ -267,5 +309,6 @@ NODE_CLASS_MAPPINGS = {
     "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
     "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
-    "Load Image With Description By Path": LoadImageWithDescriptionByPath,
+    "AI Vision Preview": AIVisionPreview,
+    "Load Image With Description By Path (Under Construction)": LoadImageWithDescriptionByPath,
 }
