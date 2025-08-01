@@ -2,15 +2,25 @@ import os
 import hashlib
 from datetime import datetime
 import json
-import piexif
 import torch
-import piexif.helper
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 import numpy as np
 import folder_paths
 import comfy.sd
 from nodes import MAX_RESOLUTION
+import base64
+import json
+import math
+import numpy as np
+import torch
+try:
+    import piexif.helper
+    import piexif
+    from .exif.exif import read_info_from_image_stealth
+    piexif_loaded = True
+except ImportError:
+    piexif_loaded = False
 
 
 
@@ -32,35 +42,40 @@ class SaveImageWithDescription:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
+                "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
                 "description": ("STRING", {"multiline": True}),
+            },
+            "hidden": {
+                "extra_pnginfo": "EXTRA_PNGINFO"
             },
         }
     
-    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("fullpath",)
+    RETURN_TYPES = ("STRING","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("folderpath", "filepath")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
-    LABEL = "Extractable Text Node"  # Default label text
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Save Image With Description"  # Default label text
     OUTPUT_NODE = True
 
 
     
-    def process(self, images, description, path, filename_prefix):
+    def process(self, images, description, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
+
 
         if output_path.strip() != '':
             if not os.path.exists(output_path.strip()):
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename_prefix, description)
-        return(output_path.strip(),)
+        self.save_images(images, output_path, filename, description, extra_pnginfo, include_workflow)
+        return (output_path.strip(),output_path.strip() + "\\" + filename.strip() + ".png")
 
 
-    def save_images(self, images, output_path, filename_prefix, description) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo, include_workflow) -> list[str]:
         img_count = 1
         paths = list()
         for image in images:
@@ -73,6 +88,12 @@ class SaveImageWithDescription:
             filename = f"{filename_prefix}.png"
             metadata = PngInfo()
             metadata.add_text("description", description)
+
+            if include_workflow is True:
+                if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+            
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             paths.append(filename)
             img_count += 1
@@ -91,20 +112,24 @@ class SaveImgToFolder:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "filename_prefix": ("STRING", {"default": f'image', "multiline": False}),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
+                "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
+            },
+            "hidden": {
+                "extra_pnginfo": "EXTRA_PNGINFO"
             },
         }
     
-    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("fullpath",)
+    RETURN_TYPES = ("STRING","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("folderpath", "filepath")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
     OUTPUT_NODE = True
 
     
-    def process(self, images, path, filename_prefix):
+    def process(self, images, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
         self.output_path = output_path
@@ -114,11 +139,11 @@ class SaveImgToFolder:
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename_prefix)
-        return (output_path.strip(),)
+        self.save_images(images, output_path, filename,extra_pnginfo, include_workflow)
+        return (output_path.strip(),output_path.strip() + "\\" + filename.strip() + ".png")
 
 
-    def save_images(self, images, output_path, filename_prefix) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix,extra_pnginfo, include_workflow) -> list[str]:
         img_count = 1
         for image in images:
             i = 255. * image.cpu().numpy()
@@ -129,6 +154,12 @@ class SaveImgToFolder:
 
             filename = f"{filename_prefix}.png"
             metadata = PngInfo()
+
+            if include_workflow is True:
+                if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
             img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
             img_count += 1
 
@@ -149,10 +180,10 @@ class LoadImageWithDescription:
 
     
     RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("image","name", "description")
+    RETURN_NAMES = ("image","name","description")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Extractable Nodes"  # A category for the node, adjust as needed
-    LABEL = "Extractable Text Node"  # Default label text
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Load Image With Description"  # Default label text
     OUTPUT_NODE = True
 
 
@@ -168,7 +199,6 @@ class LoadImageWithDescription:
             image = torch.from_numpy(image)[None,]
 
         parameters = ""
-        comfy = False
         if extension.lower() == 'png':
             try:
                 parameters = img.info['description']
@@ -177,10 +207,65 @@ class LoadImageWithDescription:
                 print("WARN: No description found in PNG")
         return(image, image_name, parameters)
                
+# Node class definition
+class LoadImageWithDescriptionByPath:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def INPUT_TYPES(s):
+        input_dir = folder_paths.get_input_directory()
+        return {
+            "required":
+                    {
+                        "folder": ("STRING", {"default": f'', "multiline": False}),
+                        "image_name": ("STRING", {"default": f'', "multiline": False}),
+                    },
+        }
+
+    
+    RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("image","name","description")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    LABEL = "Load Image With Description"  # Default label text
+    OUTPUT_NODE = True
+
+
+    
+    def process(self, folder, image_name):
+        parameters = ""
+        image = ""
+        if folder is not None:
+            if image_name is not None:
+                image_path = os.path.join(self.output_dir, folder, f"{image_name}.png")
+                with open(image_path,'rb') as file:
+                    img = Image.open(file)
+                    extension = image_path.split('.')[-1]
+                    image = img.convert("RGB")
+                    image = np.array(image).astype(np.float32) / 255.0
+                    image = torch.from_numpy(image)[None,]
+
+                if extension.lower() == 'png':
+                    try:
+                        parameters = img.info['description']
+                    except:
+                        parameters = ""
+                        print("WARN: No description found in PNG")
+            else:
+                image_name = ""
+        else:
+            folder = ""
+            
+        return(image, image_name, parameters)
+
+
+  
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
-    "Save Image With Description": ExtractableTextNode,  # The name that will show in the UI
+    "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
     "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
+    "Load Image With Description By Path": LoadImageWithDescriptionByPath,
 }
