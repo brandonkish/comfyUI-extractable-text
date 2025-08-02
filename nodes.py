@@ -220,14 +220,14 @@ class LoadImageWithDescriptionByPath:
         return {
             "required":
                     {
-                        "folder": ("STRING", {"default": f'', "multiline": False}),
                         "image_name": ("STRING", {"default": f'', "multiline": False}),
+                        "folder": ("STRING", {"default": f'', "multiline": False}),
                     },
         }
 
     
-    RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("image","name","description")
+    RETURN_TYPES = ("STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("description","name",)
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Load Image With Description"  # Default label text
@@ -237,69 +237,65 @@ class LoadImageWithDescriptionByPath:
     
     def process(self, folder, image_name):
         parameters = ""
-        image = ""
-        if folder is not None:
-            if image_name is not None:
-                image_path = os.path.join(self.output_dir, folder, f"{image_name}.png")
-                with open(image_path,'rb') as file:
-                    img = Image.open(file)
-                    extension = image_path.split('.')[-1]
-                    image = img.convert("RGB")
-                    image = np.array(image).astype(np.float32) / 255.0
-                    image = torch.from_numpy(image)[None,]
-
+        if folder and image_name:
+            image_path = os.path.join(self.output_dir, folder, f"{image_name}.png")
+            with open(image_path, 'rb') as file:
+                img = Image.open(file)
+                img.load()  # Force loading image and metadata before file is closed
+                extension = image_path.split('.')[-1]
+                
                 if extension.lower() == 'png':
                     try:
-                        parameters = img.info['description']
-                    except:
+                        parameters = img.info.get('description', '')
+                    except Exception as e:
                         parameters = ""
-                        print("WARN: No description found in PNG")
-            else:
-                image_name = ""
+                        print("WARN: No description found in PNG:", e)
+
+                img.close()  # Explicitly release resources
         else:
             folder = ""
-            
-        return(image, image_name, parameters)
+            image_name = ""
+
+        return (image_name, parameters)
 
 class AIVisionPreview:
     def __init__(self):
         self.output_dir = folder_paths.get_temp_directory()
         self.type = "temp"
-        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for _ in range(5))
         self.compress_level = 1
 
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE", ),
-                "description": ("STRING", {"default": f'image', "multiline": True}),
+                "images": ("IMAGE",),
+                "description": ("STRING", {"default": "image", "multiline": True}),
             },
             "hidden": {
-                "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
-    
-    RETURN_TYPES = ("IMAGE", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("image", "description")
-    FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
-    LABEL = "AI Vision Preview"  # Default label text
+
+    RETURN_TYPES = ("IMAGE", "STRING",)
+    RETURN_NAMES = ("image", "description",)
+    FUNCTION = "process"
+    CATEGORY = "Descriptive Images"
+    LABEL = "AI Vision Preview"
     OUTPUT_NODE = True
 
-    def process(self, images, description, prompt, extra_pnginfo):
-        # Only preview the first image in the batch for performance/UI clarity
+    def process(self, images, description, prompt=None, extra_pnginfo=None):
         image_preview = [{
-            "image": images[0],  # Tensor image (1, H, W, C)
+            "image": images[0],
             "type": self.type,
-            "filename": f"{description}.png",  # or any identifier
+            "filename": f"{description}.png",
             "subfolder": "AIVisionPreview",
         }]
-
         return (
             images,
             description,
-            { "ui": { "images": image_preview } }  # <--- this enables UI preview
+            {"ui": {"images": image_preview}}
         )
 
   
