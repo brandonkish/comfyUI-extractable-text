@@ -16,6 +16,10 @@ import numpy as np
 import torch
 import random
 from nodes import SaveImage
+import numpy as np
+import cv2
+from PIL import Image, ImageDraw, ImageFont
+
 try:
     import piexif.helper
     import piexif
@@ -181,8 +185,8 @@ class LoadImageWithDescription:
         }
 
     
-    RETURN_TYPES = ("IMAGE","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("image","name","description")
+    RETURN_TYPES = ("IMAGE","STRING","STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("image","name","description", "folder_path")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
     LABEL = "Load Image With Description"  # Default label text
@@ -192,6 +196,7 @@ class LoadImageWithDescription:
     
     def process(self, image):
         image_path = folder_paths.get_annotated_filepath(image)
+        folder_path = os.path.dirname(image_path)
         image_name = os.path.splitext(os.path.basename(image_path))[0]
         with open(image_path,'rb') as file:
             img = Image.open(file)
@@ -207,7 +212,7 @@ class LoadImageWithDescription:
             except:
                 parameters = ""
                 print("WARN: No description found in PNG")
-        return(image, image_name, parameters)
+        return(image, image_name, parameters, folder_path)
                
 # Node class definition
 class LoadImageWithDescriptionByPath:
@@ -258,53 +263,66 @@ class LoadImageWithDescriptionByPath:
 
         return (parameters, image_name)
 
-class AIVisionPreview:
+
+class DisplayImageWithText:
     def __init__(self):
-        self.output_dir = folder_paths.get_temp_directory()
-        self.type = "temp"
-        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for _ in range(5))
+        # Initialization of any required variables (e.g., directory paths, etc.)
+        self.output_dir = "your/output/directory"
+        self.type = "temp"  # Temporary output type
+        self.prefix_append = "_display_" + ''.join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(5))
         self.compress_level = 1
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE",),
-                "description": ("STRING", {"default": "image", "multiline": True}),
+                "image": ("IMAGE", {"tooltip": "The image to display."}),
+                "text": ("STRING", {"tooltip": "The text to display on the image."}),
             },
             "hidden": {
                 "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO",
+                "extra_pnginfo": "EXTRA_PNGINFO"
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING",)
-    RETURN_NAMES = ("image", "description",)
-    FUNCTION = "process"
-    CATEGORY = "Descriptive Images"
-    LABEL = "AI Vision Preview"
-    OUTPUT_NODE = True
+    RETURN_TYPES = ("IMAGE", "STRING")  # The node will output an image and the input string
+    FUNCTION = "process"  # The function to process inputs and generate outputs
+    CATEGORY = "image"  # Category of the node (image-related)
+    LABEL = "Display Image with Text"  # Label displayed for the node
+    DESCRIPTION = "Displays an image with a string of text on top of it."
 
-    def process(self, images, description, prompt=None, extra_pnginfo=None):
-        image_preview = [{
-            "image": images[0],
-            "type": self.type,
-            "filename": f"{description}.png",
-            "subfolder": "AIVisionPreview",
-        }]
-        return (
-            images,
-            description,
-            {"ui": {"images": image_preview}}
-        )
+    OUTPUT_NODE = True  # This is an output node that provides the processed image and text
 
-  
+    def process(self, image, text):
+        # Get the image and text inputs
+        input_image = image
+        input_text = text
 
+        # Convert the image (numpy array) to a PIL image
+        image_pil = Image.fromarray(input_image)
+
+        # Create a drawing context to add text to the image
+        draw = ImageDraw.Draw(image_pil)
+        font = ImageFont.load_default()  # You can specify a custom font if you wish
+
+        # Define the position and color for the text (white color by default)
+        text_position = (10, 10)
+        text_color = (255, 255, 255)  # White text
+
+        # Draw the text on the image
+        draw.text(text_position, input_text, font=font, fill=text_color)
+
+        # Display the modified image to the user
+        image_pil.show()
+
+        # Return both the image with text overlay and the original text
+        return image_pil, input_text
+    
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
     "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
     "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
-    "AI Vision Preview": AIVisionPreview,
     "Load Image With Description By Path (Under Construction)": LoadImageWithDescriptionByPath,
+    "LLM Vision Viewer": DisplayImageWithText,
 }
