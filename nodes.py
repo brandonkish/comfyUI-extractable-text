@@ -3,7 +3,7 @@ import hashlib
 from datetime import datetime
 import json
 import torch
-from PIL import Image, ExifTags
+from PIL import Image, ImageOps, ImageSequence, ExifTags
 from PIL.PngImagePlugin import PngInfo
 import numpy as np
 import folder_paths
@@ -24,6 +24,8 @@ import comfy.utils
 import comfy.sd
 import os
 import re
+import node_helpers
+from pathlib import Path
 
 try:
     import piexif.helper
@@ -42,50 +44,8 @@ def make_filename(filename):
 def handle_whitespace(string: str):
     return string.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
-class GetSmallerOfTwoNums:
-    def __init__(self):
-        return
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "a": ("INT", {"default": 1,"tooltip": "A Number"}),
-            "b": ("INT", {"default": 1,"tooltip": "A Number"}),
-           
-         },}
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("smaller_num",)
-    FUNCTION = "get_smaller"
-    CATEGORY = "Utils"  # A category for the node, adjust as needed
-    LABEL = "Get smaller value"  # Default label text
-
-    def get_smaller(self, a,b):
-        return(5)    
-    
-
-class GetLargerOfTwoNums:
-    def __init__(self):
-        return
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "a": ("INT", {"default": 1,}),
-            "b": ("INT", {"default": 1,}),
-           
-         }}
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("larger_num",)
-    FUNCTION = "get_larger"
-    CATEGORY = "Utils"  # A category for the node, adjust as needed
-    LABEL = "Get smaller value"  # Default label text
-
-    def get_larger(self, a, b):
-        return(5)    
 # Node class definition
-class SaveImageWithDescription:
+class SaveImageEasy:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
 
@@ -98,7 +58,6 @@ class SaveImageWithDescription:
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "path": ("STRING", {"default": f'', "multiline": False}),
                 "include_workflow": ("BOOLEAN", {"default": True, "tooltip": "If true will save a copy of the workflow into the PNG, Else will not."}),
-                "description": ("STRING", {"multiline": True}),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO"
@@ -108,13 +67,13 @@ class SaveImageWithDescription:
     RETURN_TYPES = ("STRING","STRING",)  # This specifies that the output will be text
     RETURN_NAMES = ("folderpath", "filepath",)
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
-    LABEL = "Save Image With Description"  # Default label text
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "Save Image Easy"  # Default label text
     OUTPUT_NODE = True
 
 
     
-    def process(self, images, description, path, filename, include_workflow, extra_pnginfo=None):
+    def process(self, images, path, filename, include_workflow, extra_pnginfo=None):
         # Ensure the input is treated as text
         output_path = os.path.join(self.output_dir, path)
 
@@ -124,11 +83,11 @@ class SaveImageWithDescription:
                 print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.makedirs(output_path, exist_ok=True)  
 
-        self.save_images(images, output_path, filename, description, extra_pnginfo, include_workflow)
+        self.save_images(images, output_path, filename, None, extra_pnginfo, include_workflow)
         return (output_path.strip(),output_path.strip() + "\\" + filename.strip() + ".png")
 
 
-    def save_images(self, images, output_path, filename_prefix, description, extra_pnginfo, include_workflow) -> list[str]:
+    def save_images(self, images, output_path, filename_prefix, extra_pnginfo, include_workflow) -> list[str]:
         img_count = 1
         paths = list()
         for image in images:
@@ -140,7 +99,6 @@ class SaveImageWithDescription:
 
             filename = f"{filename_prefix}.png"
             metadata = PngInfo()
-            metadata.add_text("description", description)
 
             if include_workflow is True:
                 if extra_pnginfo is not None:
@@ -153,7 +111,62 @@ class SaveImageWithDescription:
 
 
 # Node class definition
-class SaveImgToFolder:
+class CreateOverwriteTxtFile:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "text": ("STRING", {"default": f'', "multiline": False}),
+                "path": ("STRING", {"default": f'', "multiline": False}),
+                "filename": ("STRING", {"default": f'file', "multiline": False}),
+                "extension":  ("STRING", {"default": f'.txt', "multiline": False}),
+            },
+        }
+    
+    RETURN_TYPES = ("STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("folderpath", "text",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "Save\Overwrite Text File"  # Default label text
+    OUTPUT_NODE = True
+
+
+    
+    def process(self, text, path, filename, extension):
+        output_path = os.path.join(self.output_dir, path)
+
+        if output_path.strip() != '':
+            if not os.path.exists(output_path.strip()):
+                print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
+                os.makedirs(output_path, exist_ok=True)  
+
+        filepath = combine_path(output_path.strip(), filename.strip(), extension)
+    # Open the file in write mode ('w'), which will overwrite the file if it exists
+        with open(filepath, 'w') as file:
+            file.write(text.strip())
+        print(f"Content written to {filepath}")
+        return (output_path, text)
+
+
+
+def combine_path(folder_path, file_name, extension):
+    # Ensure the folder path ends without a trailing separator
+    folder_path = Path(folder_path).resolve()
+    
+    # Clean up the extension to ensure it only has one leading period
+    if extension.startswith('.'):
+        extension = extension[1:]  # Remove the leading period if it exists
+    # Combine the folder path with the file name and the cleaned extension
+    full_path = folder_path / f"{file_name}.{extension}"
+    
+    return str(full_path)
+
+# Node class definition
+class OverwriteImage:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.output_path = ""
@@ -177,7 +190,7 @@ class SaveImgToFolder:
     RETURN_TYPES = ("STRING","STRING")  # This specifies that the output will be text
     RETURN_NAMES = ("folderpath", "filepath")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "Save Image To Folder"  # Default label text
     OUTPUT_NODE = True
 
@@ -218,7 +231,7 @@ class SaveImgToFolder:
 
 
 # Node class definition
-class LoadImageWithDescription:
+class LoadImageWithPath:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
 
@@ -226,17 +239,20 @@ class LoadImageWithDescription:
     def INPUT_TYPES(s):
         input_dir = folder_paths.get_input_directory()
         files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+        files = folder_paths.filter_files_content_types(files, ["image"])
         return {
             "required":
-                    {"image": (sorted(files), {"image_upload": True})},
+                    {
+                        "image": (sorted(files), {"image_upload": True})
+                    },
         }
 
     
-    RETURN_TYPES = ("IMAGE","STRING","STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("image","name","description", "folder_path")
+    RETURN_TYPES = ("IMAGE","MASK","STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("image","mask","name", "folder_path")
     FUNCTION = "process"  # The function name for processing the inputs
-    CATEGORY = "Descriptive Images"  # A category for the node, adjust as needed
-    LABEL = "Load Image With Description"  # Default label text
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "Load Image With Path"  # Default label text
     OUTPUT_NODE = True
 
 
@@ -245,21 +261,65 @@ class LoadImageWithDescription:
         image_path = folder_paths.get_annotated_filepath(image)
         folder_path = os.path.dirname(image_path)
         image_name = os.path.splitext(os.path.basename(image_path))[0]
-        with open(image_path,'rb') as file:
-            img = Image.open(file)
-            extension = image_path.split('.')[-1]
-            image = img.convert("RGB")
+
+        img = node_helpers.pillow(Image.open, image_path)
+
+        output_images = []
+        output_masks = []
+        w, h = None, None
+
+        excluded_formats = ['MPO']
+
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+
+            if i.mode == 'I':
+                i = i.point(lambda i: i * (1 / 255))
+            image = i.convert("RGB")
+
+            if len(output_images) == 0:
+                w = image.size[0]
+                h = image.size[1]
+
+            if image.size[0] != w or image.size[1] != h:
+                continue
+
             image = np.array(image).astype(np.float32) / 255.0
             image = torch.from_numpy(image)[None,]
+            if 'A' in i.getbands():
+                mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            elif i.mode == 'P' and 'transparency' in i.info:
+                mask = np.array(i.convert('RGBA').getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            else:
+                mask = torch.zeros((64,64), dtype=torch.float32, device="cpu")
+            output_images.append(image)
+            output_masks.append(mask.unsqueeze(0))
 
-        parameters = ""
-        if extension.lower() == 'png':
-            try:
-                parameters = img.info['description']
-            except:
-                parameters = ""
-                print("WARN: No description found in PNG")
-        return(image, image_name, parameters, folder_path)
+        if len(output_images) > 1 and img.format not in excluded_formats:
+            output_image = torch.cat(output_images, dim=0)
+            output_mask = torch.cat(output_masks, dim=0)
+        else:
+            output_image = output_images[0]
+            output_mask = output_masks[0]
+
+        return(output_image, output_mask, image_name, folder_path)
+
+    @classmethod
+    def IS_CHANGED(s, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, 'rb') as f:
+            m.update(f.read())
+        return m.digest().hex()
+    
+    @classmethod
+    def VALIDATE_INPUTS(s, image):
+        if not folder_paths.exists_annotated_filepath(image):
+            return "Invalid image file: {}".format(image)
+
+        return True
     
 #NOTE The following code is not my own. It is copied from skfoo/ComfyUI-Coziness. All credit goes to him. I am only modifying it slightly to serve my own purposes.
 # Node class definition
@@ -298,7 +358,7 @@ class LoRANameGenerator:
     RETURN_TYPES = ("STRING", "STRING", "INT")
     RETURN_NAMES = ("lora_name", "lora_path", "starting_at")
     FUNCTION = "generate_names"  # The function name for processing the inputs
-    CATEGORY = "LoRA Testing"  # A category for the node, adjust as needed
+    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
     LABEL = "LoRA Name Generator"  # Default label text
     OUTPUT_NODE = True
 
@@ -350,7 +410,7 @@ class LoRATestingNode:
     RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING")
     RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path")
     FUNCTION = "get_lora"
-    CATEGORY = "LoRA Testing"  # A category for the node, adjust as needed
+    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
     LABEL = "LoRA Testing Node"  # Default label text
 
     def get_lora(self, model, clip, name_prefix, name_suffix, extension, start, range, idx, total_loaders, zero_padding, lora_step, subfolder, increment_seed):
@@ -517,7 +577,7 @@ class LoraTextExtractor:
     RETURN_TYPES = ("STRING", "STRING", "LORA_STACK")
     RETURN_NAMES = ("Filtered Text", "Extracted Loras", "Lora Stack")
     FUNCTION = "process_text"
-    CATEGORY = "utils"
+    CATEGORY = "BKNodes"
 
     def process_text(self, text):
         extracted_loras = "\n".join(self.lora_spec_re.findall(text))
@@ -533,11 +593,10 @@ class LoraTextExtractor:
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
-    "Save Image With Description": SaveImageWithDescription,  # The name that will show in the UI
-    "Save Image To Folder": SaveImgToFolder,  # The name that will show in the UI
-    "Load Image With Description": LoadImageWithDescription,  # The name that will show in the UI
+    "Save Image Easy": SaveImageEasy,  # The name that will show in the UI
+    "Save\Overwrite Image": OverwriteImage,  # The name that will show in the UI
+    "Load Image Easy": LoadImageWithPath,  # The name that will show in the UI
     #"LoRA Name Generator": LoRANameGenerator,
     "LoRA Testing Node": LoRATestingNode,
-    "Get Smaller Of Two Numbers": GetSmallerOfTwoNums,
-    "Get Larger Of Two Numbers": GetLargerOfTwoNums,
+    "Save\Overwrite Text File": CreateOverwriteTxtFile,
 }
