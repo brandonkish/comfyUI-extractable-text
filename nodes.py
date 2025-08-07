@@ -3,26 +3,18 @@ import hashlib
 from datetime import datetime
 import json
 import torch
-from PIL import Image, ImageOps, ImageSequence, ExifTags
+from PIL import Image, ImageOps, ImageSequence, ExifTags, ImageDraw, ImageFont
 from PIL.PngImagePlugin import PngInfo
 import numpy as np
 import folder_paths
 import comfy.sd
 from nodes import MAX_RESOLUTION
 import base64
-import json
 import math
-import numpy as np
-import torch
 import random
 from nodes import SaveImage
-import numpy as np
 import cv2
-from PIL import Image, ImageDraw, ImageFont
-import folder_paths
 import comfy.utils
-import comfy.sd
-import os
 import re
 import node_helpers
 from pathlib import Path
@@ -44,6 +36,63 @@ def make_filename(filename):
 def handle_whitespace(string: str):
     return string.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
+
+class JSONExtractor:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "ollama_connectivity": ("OLLAMA_CONNECTIVITY", {
+                "multiline": False,
+                "default": ""}),
+            "name": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            }}
+
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING",)
+    RETURN_NAMES = ("model","url","keep_alive","keep_alive_unit")
+
+    FUNCTION = "process_text"
+    CATEGORY = "BKNodes"
+    LABEL = "Ollama Connectivity Data"  # Default label text
+
+
+
+    def process_text(self, ollama_connectivity):
+        model = ''
+        url = ''
+        keep_alive = ''
+        keep_alive_unit = ''
+
+        try:
+            # Step 1: Convert Python object to a JSON string
+            json_string = json.dumps(ollama_connectivity)
+
+            # Step 2: Convert JSON string back to Python dictionary
+            data = json.loads(json_string)
+
+            # Step 3: Search for the key in the dictionary
+
+            model = json_value(data, "model")
+            url = json_value(data, "url")
+            keep_alive = json_value(data, "keep_alive")
+            keep_alive_unit = json_value(data, "keep_alive_unit")
+        except json.JSONDecodeError:
+            pass
+
+        
+        # Step 4: Ensure we return the result properly as a full string
+        return (model, url, keep_alive, keep_alive_unit)
+    
+def json_value(json_obj, name):
+    result = "NotFound"
+    if name in json_obj:
+        result = json_obj[name]
+    return result
+    
 # Node class definition
 class SaveImageEasy:
     def __init__(self):
@@ -431,6 +480,69 @@ class LoRATestingNode:
                 result = item.apply_lora(result[0], result[1])
             
         return(result[0],result[1],lora_name, lora_path, current_start)    
+    
+class SingleLoRATestNode:
+    def __init__(self):
+        self.selected_loras = SelectedLoras()
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "subfolder": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "name_prefix": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "name_suffix": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "extension": ("STRING", {
+                "multiline": False,
+                "default": ".safetensors"}),
+            
+            "idx": ("INT", {"default": 2,"tooltip": "Total number of loaders being used."}),
+            "max": ("INT", {"default": 3000,"tooltip": "The maxiumum number the loras go up to"}),
+            "min": ("INT", {"default": 2,"tooltip": "The minimum number the loras go down to."}),
+            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
+            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "lora_number")
+    FUNCTION = "get_lora"
+    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
+    LABEL = "LoRA Testing Node"  # Default label text
+
+    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, idx, max, min, lora_step, zero_padding):
+        result = (model, clip,"","",0)
+        lora_number = get_nearest_step_value(min, max, lora_step, idx)
+        padded_integer_string = f"{lora_number:0{zero_padding}d}"
+        lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
+        lora_name = name_prefix + padded_integer_string + name_suffix
+        
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+
+        if len(lora_items) > 0:
+            for item in lora_items:
+                result = item.apply_lora(result[0], result[1])
+            
+        return(result[0],result[1],lora_name, lora_path, lora_number) 
+    
+def get_nearest_step_value(min_val, max_val, step_value, starting_number):
+    # Step 1: If the starting_number is above the max value, keep subtracting max_val until it's within range
+    while starting_number > max_val:
+        starting_number -= max_val
+    
+    # Step 2: If the starting_number is below the min value, keep adding max_val until it's within range
+    while starting_number < min_val:
+        starting_number += max_val
+    
+    # Step 3: Find the nearest multiple of the step value
+    nearest_multiple = round(starting_number / step_value) * step_value
+    return nearest_multiple
 
 # maintains a list of lora objects made from a prompt, preserving loaded loras across changes
 class SelectedLoras:
@@ -562,33 +674,6 @@ class LoraItem:
     def is_noop(self):
         return self.strength_model == 0 and self.strength_clip == 0
 
-class LoraTextExtractor:
-    def __init__(self):
-        self.lora_spec_re = re.compile("(<(?:lora|lyco):[^>]+>)")
-        self.selected_loras = SelectedLoras()
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { "text": ("STRING", {
-                                "multiline": True,
-                                "default": ""}),
-                            }}
-
-    RETURN_TYPES = ("STRING", "STRING", "LORA_STACK")
-    RETURN_NAMES = ("Filtered Text", "Extracted Loras", "Lora Stack")
-    FUNCTION = "process_text"
-    CATEGORY = "BKNodes"
-
-    def process_text(self, text):
-        extracted_loras = "\n".join(self.lora_spec_re.findall(text))
-        filtered_text = self.lora_spec_re.sub("", text)
-
-        # the stack format is a list of tuples of full path, model weight, clip weight,
-        # e.g. [('styles\\abstract.safetensors', 0.8, 0.8)]
-        lora_stack = [(item.get_lora_path(), item.strength_model, item.strength_clip) for item in self.selected_loras.updated_lora_items_with_text(extracted_loras)]
-        
-        return (filtered_text, extracted_loras, lora_stack)
-
 
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
@@ -596,7 +681,8 @@ NODE_CLASS_MAPPINGS = {
     "Save Image Easy": SaveImageEasy,  # The name that will show in the UI
     "Save\Overwrite Image": OverwriteImage,  # The name that will show in the UI
     "Load Image Easy": LoadImageWithPath,  # The name that will show in the UI
-    #"LoRA Name Generator": LoRANameGenerator,
+    "Ollama Connectivity Data": JSONExtractor,
     "LoRA Testing Node": LoRATestingNode,
+    "Single LoRA Test Node": SingleLoRATestNode,
     "Save\Overwrite Text File": CreateOverwriteTxtFile,
 }
