@@ -47,9 +47,6 @@ class JSONExtractor:
             "ollama_connectivity": ("OLLAMA_CONNECTIVITY", {
                 "multiline": False,
                 "default": ""}),
-            "name": ("STRING", {
-                "multiline": False,
-                "default": ""}),
             }}
 
     RETURN_TYPES = ("STRING","STRING","STRING","STRING",)
