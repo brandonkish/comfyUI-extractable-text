@@ -528,6 +528,121 @@ class SingleLoRATestNode:
             
         return(result[0],result[1],lora_name, lora_path, lora_number) 
     
+
+def get_line_by_index(index: int, text: str) -> str:
+    """
+    Returns the line at the specified index from a multiline string.
+    
+    Args:
+        index (int): The zero-based index of the line to return.
+        text (str): The multiline string input.
+        
+    Returns:
+        str: The line at the given index, or an error message if the index is out of range.
+    """
+    lines = text.splitlines()
+    
+    if 0 <= index < len(lines):
+        return lines[index]
+    else:
+        return f"Index {index} out of range. Text has {len(lines)} lines."
+    
+def count_lines(text: str) -> int:
+    """
+    Returns the number of lines in a multiline string.
+    
+    Args:
+        text (str): The multiline string input.
+        
+    Returns:
+        int: The total number of lines.
+    """
+    return len(text.splitlines())
+
+def has_next_line(index: int, text: str) -> bool:
+    """
+    Checks if there is a next line after the given index in a multiline string.
+
+    Args:
+        index (int): The current line index (0-based).
+        text (str): The multiline string input.
+
+    Returns:
+        bool: True if there is a next line, False otherwise.
+    """
+    lines = text.splitlines()
+    return (index + 1) < len(lines)
+
+def parse_int(s: str) -> int:
+    """
+    Attempts to parse a string into an integer.
+
+    Args:
+        s (str): The input string.
+
+    Returns:
+        int: The parsed integer.
+
+    Raises:
+        ValueError: If the string cannot be converted to an integer.
+    """
+    return int(s)
+    
+class MultiLoRATestNode:
+    def __init__(self):
+        self.selected_loras = SelectedLoras()
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "while_loop_idx": ("INT", {"default": 0,"tooltip": "Manually add a +1 to a value in the while loop and use that to increment this value."}),
+            "subfolder": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "name_prefix": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "name_suffix": ("STRING", {
+                "multiline": False,
+                "default": ""}),
+            "extension": ("STRING", {
+                "multiline": False,
+                "default": ".safetensors"}),
+            "lora_list": ("STRING", {
+                "multiline": True,
+                "default": ""}),
+            
+            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
+            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP","BOOLEAN", "STRING", "STRING", "INT",)
+    RETURN_NAMES = ("MODEL", "CLIP","has_next", "lora_name", "lora_path", "lora_number")
+    FUNCTION = "get_lora"
+    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
+    LABEL = "LoRA Testing Node"  # Default label text
+
+    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, lora_list, while_loop_idx, lora_step, zero_padding):
+        result = (model, clip,"","",0, False)
+        has_next = has_next_line(while_loop_idx, lora_list)
+        current_lora_string = get_line_by_index(while_loop_idx, lora_list)
+        idx = parse_int(current_lora_string)
+        
+        lora_number = get_nearest_step(lora_step, idx)
+        padded_integer_string = f"{lora_number:0{zero_padding}d}"
+        lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
+        lora_name = name_prefix + padded_integer_string + name_suffix
+        
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+
+        if len(lora_items) > 0:
+            for item in lora_items:
+                result = item.apply_lora(result[0], result[1])
+            
+        return(result[0],result[1],lora_name, lora_path, lora_number, has_next) 
+    
 def get_nearest_step_value(min_val, max_val, step_value, starting_number):
     # Step 1: If the starting_number is above the max value, keep subtracting max_val until it's within range
     while starting_number > max_val:
@@ -537,6 +652,11 @@ def get_nearest_step_value(min_val, max_val, step_value, starting_number):
     while starting_number < min_val:
         starting_number += max_val
     
+    # Step 3: Find the nearest multiple of the step value
+    nearest_multiple = round(starting_number / step_value) * step_value
+    return nearest_multiple
+
+def get_nearest_step(step_value, starting_number):
     # Step 3: Find the nearest multiple of the step value
     nearest_multiple = round(starting_number / step_value) * step_value
     return nearest_multiple
@@ -682,4 +802,5 @@ NODE_CLASS_MAPPINGS = {
     "LoRA Testing Node": LoRATestingNode,
     "Single LoRA Test Node": SingleLoRATestNode,
     "Save\Overwrite Text File": CreateOverwriteTxtFile,
+    "Multi LoRA Test Node": MultiLoRATestNode,
 }
