@@ -641,7 +641,7 @@ class MultiLoRATestNode:
             for item in lora_items:
                 result = item.apply_lora(result[0], result[1])
             
-        return(result[0],result[1],lora_name, lora_path, lora_number, has_next) 
+        return(result[0],result[1],has_next,lora_name, lora_path, lora_number) 
     
 def get_nearest_step_value(min_val, max_val, step_value, starting_number):
     # Step 1: If the starting_number is above the max value, keep subtracting max_val until it's within range
