@@ -586,7 +586,11 @@ def parse_int(s: str) -> int:
     Raises:
         ValueError: If the string cannot be converted to an integer.
     """
-    return int(s)
+
+    try:
+        return int(s.strip())
+    except (ValueError, TypeError):
+        return -1
     
 class MultiLoRATestNode:
     def __init__(self):
@@ -626,20 +630,28 @@ class MultiLoRATestNode:
 
     def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, lora_list, while_loop_idx, lora_step, zero_padding):
         result = (model, clip,"","",0, False)
-        has_next = has_next_line(while_loop_idx, lora_list)
+        if count_lines(lora_list) > 1:
+            has_next = has_next_line(while_loop_idx, lora_list)
+        else:
+            has_next = False
         current_lora_string = get_line_by_index(while_loop_idx, lora_list)
         idx = parse_int(current_lora_string)
+        if idx >= 0:
+            lora_number = get_nearest_step(lora_step, idx)
+            padded_integer_string = f"{lora_number:0{zero_padding}d}"
+            lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
+            lora_name = name_prefix + padded_integer_string + name_suffix
         
-        lora_number = get_nearest_step(lora_step, idx)
-        padded_integer_string = f"{lora_number:0{zero_padding}d}"
-        lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
-        lora_name = name_prefix + padded_integer_string + name_suffix
-        
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+            lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
 
-        if len(lora_items) > 0:
-            for item in lora_items:
-                result = item.apply_lora(result[0], result[1])
+            if len(lora_items) > 0:
+                for item in lora_items:
+                    result = item.apply_lora(result[0], result[1])
+        
+        else:
+            lora_name = f"INVALID LINE: [{current_lora_string}]. No Lora Used."
+            lora_path = f"INVALID LINE: [{current_lora_string}]. No Lora Used."
+            lora_number = -1
             
         return(result[0],result[1],has_next,lora_name, lora_path, lora_number) 
     
