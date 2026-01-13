@@ -4574,7 +4574,110 @@ class BKMaskSquareAndPad:
 
         return mask
 
+##################################################################################################################
+# BK Has Mask
+##################################################################################################################
 
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKHasMask:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "mask": ("MASK",),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK", "INT", "BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("mask", "count", "has_mask")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Has Mask"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, mask):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, mask):
+        self.print_debug("###################################### BK IS HAS MASK ############################################")
+        
+        is_has_mask = not self.is_mask_empty(mask)
+        count = self.image_batch_size(mask)
+
+        self.print_debug("##################################################################################################")
+        return (mask, count, is_has_mask)
+
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+
+
+##################################################################################################################
+# BK Bool Not
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKBoolNot:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "boolean": ("BOOLEAN",),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("not_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Has Mask"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, boolean):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, boolean):
+        self.print_debug("##################################### BK BOOLEAN NOT ############################################")
+        
+        not_boolean = not boolean
+
+        self.print_debug("##################################################################################################")
+        return (not_boolean)
 
 ##################################################################################################################
 # BK Load Image By Path
@@ -5391,6 +5494,8 @@ NODE_CLASS_MAPPINGS = {
     "BK Crop And Pad": BKCropAndPad,
     "BK Body Ratios": BKBodyRatios,
     "BK Mask Square And Pad": BKMaskSquareAndPad,
+    "BK Has Mask": BKHasMask,
+    "BK Bool Not": BKBoolNot,
 }
 
 # TODO: NODES: Create node that will save a json, with the hash of the model, the link to download it, and what resource it is from, then create a node that will use that information to download it? Or maybe instead of a json have it as readable text for anthony?
