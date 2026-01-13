@@ -3717,9 +3717,14 @@ class BKGetLastFolderName:
 
         return (path, foldername)
 
+##################################################################################################################
+# BK Get Matching Mask
+##################################################################################################################
+
 class BKGetMatchingMask:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.min_mask_size = 64
     @classmethod
     def INPUT_TYPES(cls):
         # Define the types of inputs your node accepts (single "text" input)
@@ -3727,47 +3732,131 @@ class BKGetMatchingMask:
             "required": {
                 "all_masks": ("MASK",),
                 "ref_mask": ("MASK",),
-                "is_notify_on_missing_mask": ("BOOLEAN", {"default": True, "tooltip": "If true, will throw an error if the ref mask is missing or empty. Will also display name of image."}),
+                "notify_on_no_match": ("BOOLEAN", {"default": True, "tooltip": "If true, will throw an error if the ref mask is missing or empty. Will also display name of image."}),
             },
             "optional": {
-                 "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
+                "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
+                "user_mask": ("MASK",),
             },
             "hidden": {
             },
         }
     
-    RETURN_TYPES = ("MASK", "BOOLEAN",)  # This specifies that the output will be text
-    RETURN_NAMES = ("found_mask", "is_mask_found")
+    RETURN_TYPES = ("MASK", "BOOLEAN", "MASK")  # This specifies that the output will be text
+    RETURN_NAMES = ("matching_mask", "non_matching_mask")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Save Image"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, all_masks, ref_mask, is_notify_on_missing_mask, image_name = "UNKNOWN"):
+    def IS_CHANGED(self, all_masks, ref_mask, notify_on_no_match, image_name = "UNKNOWN", user_mask = None):
         return float("nan")
 
-    
-    def process(self, all_masks, ref_mask, is_notify_on_missing_mask, image_name = "UNKNOWN"):
-        threshold = 0.5
-        binary_ref_mask = ref_mask > threshold
+    def replace_nontype_with_default_comfyui_mask(self, mask):
+        if mask is None:
+            return self.create_empty_transparent_3d_image(self.min_mask_size, self.min_mask_size)
+        else:
+            return mask
+        
+    def process(self, all_masks, ref_mask, notify_on_no_match, image_name = "UNKNOWN", user_mask = None):
 
-        # EMPTY ref mask
-        if not torch.any(binary_ref_mask):
-            found_mask = torch.zeros_like(ref_mask)
-            if is_notify_on_missing_mask:
-                print(f"No mask found in image [{image_name}]")
-            return (found_mask, False)
+        # Prevent errors by fixing NoneType mask values to standard ComfyUI default empty mask
+        user_mask  = self.replace_nontype_with_default_comfyui_mask(user_mask)
+        all_masks  = self.replace_nontype_with_default_comfyui_mask(all_masks)
+        ref_mask  = self.replace_nontype_with_default_comfyui_mask(ref_mask)
+
+        # Ensure all masks are 3D and not 4D
+        user_mask = self.convert_4d_to_3d(user_mask)
+        ref_mask = self.convert_4d_to_3d(ref_mask)
+        all_masks = self.convert_4d_to_3d(all_masks)
+
+        # Flatten masks that are a set of masks instead of one mask for processing
+        if self.image_batch_size(user_mask) > 1:
+            print(f"BKGetMathchingMask: WARNING: user_mask was a set of masks, not a single mask. Flattening masks to one mask.")
+            self.flatten_all_batched_masks_to_one_mask(user_mask)
+
+        if self.image_batch_size(ref_mask) > 1:
+            print(f"BKGetMathchingMask: WARNING: ref_mask was a set of masks, not a single mask. Flattening masks to one mask.")
+            ref_mask = self.flatten_all_batched_masks_to_one_mask(ref_mask)
+
+        binary_ref_mask = self.convert_to_binary_mask(ref_mask)
+
+        list_of_non_matching_masks = []
+        found_mask = None
 
         # NON-empty ref mask
         for mask in all_masks:
-            binary_mask = mask > threshold
-            if torch.all(binary_ref_mask <= binary_mask):
-                return (mask, True)
+            if torch.all(binary_ref_mask <= binary_ref_mask):
+                found_mask = mask
+            else:
+                list_of_non_matching_masks.append(mask)
+        
+        
+        # If any masks were found that did not match, combine them, else return an empty mask
+        if len(list_of_non_matching_masks) > 0:
+            non_matching_masks = self.recombine_a_list_of_masks(list_of_non_matching_masks)
+            non_matching_masks = self.flatten_all_batched_masks_to_one_mask(non_matching_masks)
+        else:
+            non_matching_masks = self.create_empty_transparent_3d_image(self.min_mask_size, self.min_mask_size)
 
-        # No match
-        return (torch.zeros_like(ref_mask), False)
+        # If a matching mask was not found, return an empty mask
+        is_found = True
+        if found_mask is None:
+            if notify_on_no_match:
+                ValueError(f"BKGetMathchingMask: No matching mask found, and notify was set to true.")
+            is_found = False
+            found_mask = self.create_empty_transparent_3d_image(self.min_mask_size, self.min_mask_size)
+
+
+        return (found_mask, non_matching_masks, is_found)
     
+    def recombine_a_list_of_masks(self, masks):
+        return torch.stack(masks)
+    
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+    
+    def create_empty_transparent_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.ones(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def convert_4d_to_3d(self, tensor):
+        if len(tensor.size()) == 4:
+            return tensor.squeeze(3)
+        else:
+            return tensor
+        
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
+    
+    def convert_to_binary_mask(self, mask):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Create a new mask with values set to 1 if the pixel is greater than 0
+        mask[mask > 0] = 1
+
+        return mask
+
+
+##################################################################################################################
+# BK Body Ratios
+##################################################################################################################
+
+
 class BKBodyRatios:
     def __init__(self):
         # Initialize running averages
