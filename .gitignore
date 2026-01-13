@@ -1,1 +1,4 @@
-__pycache__/nodes.cpython-312.pyc
+*.pyc
+*.pyc
+*.pyc
+/__pycache__
