@@ -1,1 +1,0 @@
-Extractor\bin\Release\net9.0-windows\METAVACE.exe
