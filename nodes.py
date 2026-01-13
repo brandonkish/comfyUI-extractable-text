@@ -3871,7 +3871,7 @@ class BKCropAndPad:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "single_person_mask": ("MASK",),
+                "person_mask": ("MASK",),
                 "desired_size": ("INT",),
             },
             "optional": {
@@ -3890,7 +3890,7 @@ class BKCropAndPad:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, image, single_person_mask, desired_size, image_name = "NA", user_mask = None):
+    def IS_CHANGED(self, image, person_mask, desired_size, image_name = "NA", user_mask = None):
         print(f"BKCropAndPad IS_CHANGED called")
         return float("nan")
     
