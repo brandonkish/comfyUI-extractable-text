@@ -3784,6 +3784,7 @@ class BKGetMatchingMask:
             ref_mask = self.flatten_all_batched_masks_to_one_mask(ref_mask)
 
         binary_ref_mask = self.convert_to_binary_mask(ref_mask)
+        
 
         list_of_non_matching_masks = []
         found_mask = None
@@ -3791,19 +3792,24 @@ class BKGetMatchingMask:
         # NON-empty ref mask
         non_matching_count = 0
         for mask in all_masks:
-            if torch.all(binary_ref_mask <= binary_ref_mask):
-                found_mask = mask.unsqueeze(0)
+            binary_mask = self.convert_to_binary_mask(mask)
+            if torch.all(binary_ref_mask <= binary_mask):
+                self.print_debug(f"Found a matching mask!")
+                found_mask = binary_mask.unsqueeze(0)
             else:
                 non_matching_count += 1
-                list_of_non_matching_masks.append(mask)
+                list_of_non_matching_masks.append(binary_mask)
+        
         
         
         # If any masks were found that did not match, combine them, else return an empty mask
         if len(list_of_non_matching_masks) > 0:
             non_matching_masks = self.recombine_a_list_of_masks(list_of_non_matching_masks)
             non_matching_masks = self.flatten_all_batched_masks_to_one_mask(non_matching_masks)
+            combined_mask = self.combine_masks(user_mask, non_matching_masks)
         else:
             non_matching_masks = self.create_empty_opaque_3d_image(self.min_mask_size, self.min_mask_size)
+            combined_mask = user_mask
 
         # If a matching mask was not found, return an empty mask
         is_found = True
@@ -3813,7 +3819,8 @@ class BKGetMatchingMask:
             is_found = False
             found_mask = self.create_empty_opaque_3d_image(self.min_mask_size, self.min_mask_size)
 
-        combined_mask = self.combine_masks(user_mask, non_matching_masks)
+        
+        
 
         self.print_debug(f"found_mask.size()[{found_mask.size()}]")
         self.print_debug(f"non_matching_masks.size()[{non_matching_masks.size()}]")
