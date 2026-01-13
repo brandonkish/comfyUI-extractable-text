@@ -4447,7 +4447,7 @@ class BKMaskSquareAndPad:
         }
     
     RETURN_TYPES = ("MASK","INT","BOOLEAN")  # This specifies that the output will be text
-    RETURN_NAMES = ("multi_masks","original_count","has_mask")
+    RETURN_NAMES = ("single_combined_mask","original_count","has_mask")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Mask Square And Pad"  # Default label text
