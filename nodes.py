@@ -3735,15 +3735,15 @@ class BKGetMatchingMask:
                 "notify_on_no_match": ("BOOLEAN", {"default": True, "tooltip": "If true, will throw an error if the ref mask is missing or empty. Will also display name of image."}),
             },
             "optional": {
-                "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
                 "user_mask": ("MASK",),
+                "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
             },
             "hidden": {
             },
         }
     
-    RETURN_TYPES = ("MASK", "BOOLEAN", "MASK")  # This specifies that the output will be text
-    RETURN_NAMES = ("matching_mask", "non_matching_mask")
+    RETURN_TYPES = ("MASK", "MASK", "MASK", "BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("matching_mask", "non_matching_mask", "combined_mask", "is_mask_found")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Save Image"  # Default label text
@@ -3808,8 +3808,25 @@ class BKGetMatchingMask:
             is_found = False
             found_mask = self.create_empty_transparent_3d_image(self.min_mask_size, self.min_mask_size)
 
+        combined_mask = self.combine_masks(user_mask, non_matching_masks)
 
-        return (found_mask, non_matching_masks, is_found)
+
+        return (found_mask, non_matching_masks, combined_mask, is_found)
+    
+    def combine_masks(user_mask, non_matching_mask):
+        # Ensure the masks are tensors
+        if not isinstance(user_mask, torch.Tensor) or not isinstance(non_matching_mask, torch.Tensor):
+            raise TypeError("Both mask1 and mask2 must be torch tensors.")
+        
+        # Check if the masks have the same shape
+        if user_mask.shape != non_matching_mask.shape:
+            print(f"BKGetMatchingMask: WARNING: Could not merge the user_mask and the non_matching masks. They have different sizes. They must be the same size to merge them. Returning only the user_mask.")
+            return user_mask
+
+        # Combine the masks by taking the element-wise maximum
+        combined_mask = torch.maximum(user_mask, non_matching_mask)
+
+        return combined_mask
     
     def recombine_a_list_of_masks(self, masks):
         return torch.stack(masks)
