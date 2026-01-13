@@ -3539,7 +3539,7 @@ class BKSaveImage:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "seed": ("INT",{"default": 0, "min": 0, "max": 0xffffffffffffffff, "forceInput": True}),
+                
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "name_suffix": ("STRING", {"default": f'', "multiline": False}),
                 "folder_path": ("STRING", {"default": f'', "multiline": False}),
@@ -3550,9 +3550,11 @@ class BKSaveImage:
                 "is_save_image": ("BOOLEAN", {"default": True, "tooltip": "Node will only save the image if set to true. Else it will not save the image."}),
             },
             "optional": {
+                "seed_optional": ("INT",{"default": 0, "min": 0, "max": 0xffffffffffffffff, "forceInput": True}),
                 "positive_optional": ("STRING",{ "multiline": True, "forceInput": True}, ),
                 "negative_optional": ("STRING",{"multiline": True, "forceInput": True}, ),
                 "other_optional": ("STRING",{"multiline": True, "forceInput": True}, ),
+                "mask_optional": ("MASK",),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO"
@@ -3567,11 +3569,11 @@ class BKSaveImage:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True):
+    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True,mask_optional=True):
         return float("nan")
 
     
-    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True):
+    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=True):
         if filename is None:
             raise ValueError(f"Please enter a name to save the file as.")
 
@@ -3591,7 +3593,10 @@ class BKSaveImage:
 
         # only add seed to name if option is toggled
         if add_seed_to_name:
-            filename = f"{filename}_{seed}"
+            if seed_optional:
+                filename = f"{filename}_{seed_optional}"
+            else:
+                filename = f"{filename}_NA"
 
         # Define the full file path with the correct file separator for the OS
         filepath = os.path.join(folder_path.strip(), f"{filename.strip()}")
@@ -3603,7 +3608,7 @@ class BKSaveImage:
                     print(f'The path `{folder_path.strip()}` specified doesn\'t exist! Creating directory.')
                     os.makedirs(folder_path, exist_ok=True)  
 
-            savedpath = self.save_images(images, filepath, extra_pnginfo, include_workflow, name_suffix, positive_optional, negative_optional, seed, other_optional)
+            savedpath = self.save_images(images, filepath, extra_pnginfo, include_workflow, name_suffix, positive_optional, negative_optional, seed_optional, other_optional, mask_optional)
             
             if len(images) == 0:
                 print(f'No images found, nothing to save.')
@@ -3615,8 +3620,9 @@ class BKSaveImage:
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
         else:
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
-        
-    def save_images(self, images, filepath, extra_pnginfo, include_workflow, suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None) -> list[str]:
+
+
+    def save_images(self, images, filepath, extra_pnginfo, include_workflow, suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, mask_optional=None) -> list[str]:
         
         # Having img_count outside the loop allows us to pickup where we left off for the next image
         img_count = 1
@@ -3624,15 +3630,29 @@ class BKSaveImage:
         if filepath is not None and suffix is not None:
             filepath = f"{filepath}_{suffix}"
 
-        
         for image in images:
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
 
+            # If a mask is provided and is not empty, combine the mask with the image to create an alpha channel
+            if mask_optional is not None and mask_optional.sum() > 0:  # Check if mask is not empty
+                # Ensure the mask is a binary mask (values should be 0 or 1)
+                mask = mask_optional.cpu().numpy().astype(np.uint8) * 255  # scale to 255 for transparency
+
+                # Invert the mask: 1 (transparent) becomes 0, 0 (opaque) becomes 255
+                inverted_mask = 255 - mask  # Invert mask values: 1 -> 0, 0 -> 255
+
+                # Convert the image to RGBA (Red, Green, Blue, Alpha)
+                img = img.convert("RGBA")
+                img_array = np.array(img)
+
+                # Replace the alpha channel with the inverted mask (fully transparent where mask is 1, opaque where mask is 0)
+                img_array[..., 3] = inverted_mask  # Set the alpha channel based on the inverted mask
+
+                img = Image.fromarray(img_array)
 
             # Create file path with extension
             filepath_w_ext = filepath + ".png"
-
             numbered_filepath_w_ext = filepath_w_ext
 
             # If the file already exists, add a number to the name
@@ -3646,8 +3666,6 @@ class BKSaveImage:
 
             # Final filepath (with number if necessary)
             filepath_w_ext = numbered_filepath_w_ext
-            
-           
 
             metadata = PngInfo()
             if positive_optional is not None:
@@ -3655,7 +3673,7 @@ class BKSaveImage:
 
             if negative_optional is not None:
                 metadata.add_text("negative", negative_optional)
-            
+
             if seed_optional is not None:
                 metadata.add_text("seed", str(seed_optional))
 
@@ -3667,12 +3685,10 @@ class BKSaveImage:
                         for x in extra_pnginfo:
                             metadata.add_text(x, json.dumps(extra_pnginfo[x]))
 
-
-            
-
             img.save(filepath_w_ext, pnginfo=metadata, optimize=True)
             img_count += 1
         return filepath_w_ext
+
     
 class BKGetLastFolderName:
     def __init__(self):
