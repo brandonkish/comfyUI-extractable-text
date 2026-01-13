@@ -3871,7 +3871,7 @@ class BKCropAndPad:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "person_mask": ("MASK",),
+                "single_person_mask": ("MASK",),
                 "desired_size": ("INT",),
             },
             "optional": {
@@ -3883,14 +3883,14 @@ class BKCropAndPad:
         }
     
     RETURN_TYPES = ("IMAGE", "MASK","MASK","MASK","MASK","BOOLEAN")  # This specifies that the output will be text
-    RETURN_NAMES = ("cropped_image", "cropped_person_mask", "cropped_user_mask", "cropped_outpaint_mask", "combined_mask", "self.is_need_outpaint")
+    RETURN_NAMES = ("cropped_image", "cropped_person_mask", "cropped_user_mask", "cropped_outpaint_mask", "combined_mask", "is_need_outpaint")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Crop And Pad"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, image, person_mask, desired_size, image_name = "NA", user_mask = None):
+    def IS_CHANGED(self, image, single_person_mask, desired_size, image_name = "NA", user_mask = None):
         print(f"BKCropAndPad IS_CHANGED called")
         return float("nan")
     
@@ -3899,11 +3899,19 @@ class BKCropAndPad:
     
     def smallest_dimension_of_image(self, image):
         return min(self.image_height(image), self.image_width(image))
+    
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, image, person_mask, desired_size, image_name="NA", user_mask=None):
-        self.print_debug("##################################################################################################")
+        self.print_debug("##################################### BK Crop And Pad ############################################")
         # Initialize output variables and constants
+
+        if self.image_batch_size(person_mask) > 1:
+            #TODO: Enable mask flatening of multi masks.
+            print(f"BKCropAndPad: WARNING: Recieved multiple batched masks for person masks. Flattening them down to one mask.")
+            person_mask = self.flatten_all_batched_masks_to_one_mask(person_mask)
 
         self.print_debug(f"desired_size before clamp[{desired_size}]")
 
@@ -4049,6 +4057,8 @@ class BKCropAndPad:
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
         if not torch.any(person_mask):
             raise ValueError("The person mask is empty or has no non-zero elements.")
+        
+
 
         # Get non-zero indices of the person_mask (where the person is located)
         # Person_mask is a set of masks, not a single mask, so we take the first one
@@ -4412,6 +4422,157 @@ class BKCropAndPad:
         return self.image_height(src_image) < self.image_height(dest_image)
    
 
+##################################################################################################################
+# BK Mask Square And Pad
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKMaskSquareAndPad:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "multi_masks": ("MASK",),
+                "padding": ("INT", {"default": 0}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK","INT","BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("multi_masks","original_count","has_mask")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Mask Square And Pad"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, multi_masks, padding):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, multi_masks, padding):
+        self.print_debug("#################################### BK MASK SQUARE AND PAD ######################################")
+        #NOTE: Masks are [batch_size, height, width]
+
+        if multi_masks is None:
+            multi_masks = self.create_empty_transparent_3d_image(self.minimum_image_size, self.minimum_image_size)
+            print("BK Mask Square And Pad: WARNING: Input mask was NONE. This will break other nodes. Correcting issue, and returning ComfyUI Default empty mask.")
+            return (multi_masks, 0, False)
+        
+        # Ensure masks are 3 dimensional before processing. 4 dimensional masks are usually images.
+        multi_masks = self.convert_4d_to_3d(multi_masks)
+            
+
+        count = self.image_batch_size(multi_masks)
+        
+
+        if self.is_mask_empty(multi_masks):
+            return (multi_masks, count, False)
+        
+        all_modified_masks = []
+        
+        # We do this before we merge the masks, so it doesn't just create one large square mask over all masks.
+        for mask in multi_masks:
+            bool_mask = self.convert_mask_to_boolean(mask)
+            squared_padded_masks = self.square_and_pad(bool_mask, padding)
+            all_modified_masks.append(squared_padded_masks)
+            
+
+        all_modified_masks = self.recombine_a_list_of_masks(all_modified_masks)
+        modified_mask = self.flatten_all_batched_masks_to_one_mask(all_modified_masks)
+
+
+
+        has_mask = not self.is_mask_empty(modified_mask)
+
+
+        self.print_debug("##################################################################################################")
+        return (modified_mask, count, has_mask)
+    
+    def recombine_a_list_of_masks(self, masks):
+        return torch.stack(masks)
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+    
+    def create_empty_transparent_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.ones(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def convert_4d_to_3d(self, tensor):
+        if len(tensor.size()) == 4:
+            return tensor.squeeze(3)
+        else:
+            return tensor
+        
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
+    
+    def convert_mask_to_boolean(self, mask):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Create a new mask with values set to 1 if the pixel is greater than 0
+        mask[mask > 0] = 1
+
+        return mask
+
+    def square_and_pad(self, mask, padding):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Find the indices of all non-zero pixels (i.e., the foreground pixels)
+        non_zero_indices = torch.nonzero(mask)
+
+        if non_zero_indices.size(0) == 0:
+            # If there are no non-zero pixels, return the mask as is
+            return mask
+
+        # Get the min and max row and column indices to form the bounding box
+        min_row = non_zero_indices[:, 0].min().item()
+        max_row = non_zero_indices[:, 0].max().item()
+        min_col = non_zero_indices[:, 1].min().item()
+        max_col = non_zero_indices[:, 1].max().item()
+
+        # Apply padding to the bounding box
+        min_row = max(min_row - padding, 0)  # Ensure min_row doesn't go below 0
+        max_row = min(max_row + padding, mask.shape[0] - 1)  # Ensure max_row doesn't exceed height
+        min_col = max(min_col - padding, 0)  # Ensure min_col doesn't go below 0
+        max_col = min(max_col + padding, mask.shape[1] - 1)  # Ensure max_col doesn't exceed width
+
+        # Fill the bounding box area with 1
+        mask[min_row:max_row+1, min_col:max_col+1] = 1
+
+        return mask
 
 
 
@@ -5229,6 +5390,7 @@ NODE_CLASS_MAPPINGS = {
     "BK TSV Random Prompt": BKTSVRandomPrompt,
     "BK Crop And Pad": BKCropAndPad,
     "BK Body Ratios": BKBodyRatios,
+    "BK Mask Square And Pad": BKMaskSquareAndPad,
 }
 
 # TODO: NODES: Create node that will save a json, with the hash of the model, the link to download it, and what resource it is from, then create a node that will use that information to download it? Or maybe instead of a json have it as readable text for anthony?
