@@ -4916,9 +4916,11 @@ class BKAddMaskBox:
 
         # Apply the mask in the specified region (set to 1 in the specified area)
         mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel] = 1
-        
+        print(status)
+
         self.print_debug(f"mask.size()[{mask.size()}]")
         self.print_debug("##################################################################################################")
+        
         return (mask, is_applied, status)
     
     def skip(self, mask, reason: str):
