@@ -1455,7 +1455,7 @@ class BKTSVRandomPrompt:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.name = ""
-        self.is_debug = True
+        self.is_debug = False
         self.name_column_suffix = "_name"
         self.negative_column_suffix = "_negative"
 
@@ -3741,7 +3741,7 @@ class BKGetMatchingMask:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.min_mask_size = 64
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4002,7 +4002,7 @@ class BKCropAndPad:
         self.minimum_image_size = 64
         # This ratio comes from testing 30,000+ real single subject images TBD
         # self.head_clearance_ratio = 0.18 
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4569,7 +4569,7 @@ class BKCropAndPad:
 class BKMaskSquareAndPad:
     def __init__(self):
         self.minimum_image_size = 64
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4603,7 +4603,7 @@ class BKMaskSquareAndPad:
         #NOTE: Masks are [batch_size, height, width]
 
         if multi_masks is None:
-            multi_masks = self.create_empty_transparent_3d_image(self.minimum_image_size, self.minimum_image_size)
+            multi_masks = self.create_empty_opaque_3d_image(self.minimum_image_size, self.minimum_image_size)
             print("BK Mask Square And Pad: WARNING: Input mask was NONE. This will break other nodes. Correcting issue, and returning ComfyUI Default empty mask.")
             return (multi_masks, 0, False)
         
@@ -4654,11 +4654,11 @@ class BKMaskSquareAndPad:
     def image_batch_size(self, image_3d_4d):
         return image_3d_4d.size()[0]
     
-    def create_empty_transparent_3d_image(self, height, width):
+    def create_empty_opaque_3d_image(self, height, width):
         # NOTE [Batch Size, Height, Width]
         # use the reference image to get batch size and channels
         #create a empty black / transparent image the size of the crop box
-        return torch.ones(( 1, 
+        return torch.zeros(( 1, 
                             height, 
                             width), 
                             dtype=torch.float32)
@@ -4721,7 +4721,7 @@ class BKMaskSquareAndPad:
 class BKHasMask:
     def __init__(self):
         self.minimum_image_size = 64
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4782,7 +4782,7 @@ class BKHasMask:
 class BKBoolNot:
     def __init__(self):
         self.minimum_image_size = 64
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4822,6 +4822,190 @@ class BKBoolNot:
         if self.is_debug:
             print(string)
     
+##################################################################################################################
+# BK Add Mask Box
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKAddMaskBox:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+        self.ONLY_IF_MISSING_MODES = {
+            "Only If Missing",
+            "Only If Missing And Vertical Image",
+            "Only If Missing And Horizontal Image",
+            "Only If Missing And Square Image",
+        }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "top":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "left":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "width":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "height":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "mode":(["Always Apply", "Only If Missing","Only If Missing And Vertical Image","Only If Missing And Horizontal Image","Only If Missing And Square Image"], {"default":"Always Apply"}),
+            },
+            "optional": {
+                "mask":("MASK",),
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK","BOOLEAN", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("mask", "is_applied", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Add Mask Box"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, top, left, height, width, mode, mask=None):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, top, left, height, width, mode, mask=None):
+        self.print_debug("##################################### BK ADD MASK BOX ############################################")
+        
+        # Assuming mask is a 3D tensor with dimensions [batch_size, height, width]
+        # If mask is None, create a new one that is the same size as the image
+        if mask is None:
+            raise ValueError("BKAddMaskBox: Mask must be provided. Must know size of image to create mask for.")
+        
+        # Get image size (height, width)
+        _, img_height, img_width = mask.shape  # Image is assumed to be [batch_size, height, width]
+        
+        # Convert percentages to actual pixel values
+        top_pixel = int(top / 100.0 * img_height)
+        left_pixel = int(left / 100.0 * img_width)
+        height_pixel = int(height / 100.0 * img_height)
+        width_pixel = int(width / 100.0 * img_width)
+
+        # Bound the mask area within the image dimensions
+        bottom_pixel = min(top_pixel + height_pixel, img_height)
+        right_pixel = min(left_pixel + width_pixel, img_width)
+
+        is_applied = True
+        status = "BKAddMaskBox: Box applied to mask"
+
+        if mode == "Only If Missing And Vertical Image":
+            if self.image_height(mask) < self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is less than its width [{self.image_width(mask)}]. It is not a vertical image. Skipping")
+            
+        if mode == "Only If Missing And Horizontal Image":
+            if self.image_height(mask) > self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is greater than its width [{self.image_width(mask)}]. It is not a horizontal image. Skipping")
+
+        if mode == "Only If Missing And Square Image":
+            if self.image_height(mask) != self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is not equal its width [{self.image_width(mask)}]. It is not a square image. Skipping")
+        
+        # Check if we are in "Only If Missing" mode
+        if mode in self.ONLY_IF_MISSING_MODES:
+            # Check if the region already has a mask applied (non-zero region)
+            if mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel].sum() > 0:
+                is_applied = False
+                status = "BKAddMaskBox: Region already has a mask applied. Skipping."
+                print(status)
+                return (mask, is_applied, status)  # No mask applied if the region already has a mask in the area
+
+        # Apply the mask in the specified region (set to 1 in the specified area)
+        mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel] = 1
+        
+        self.print_debug(f"mask.size()[{mask.size()}]")
+        self.print_debug("##################################################################################################")
+        return (mask, is_applied, status)
+    
+    def skip(self, mask, reason: str):
+        print(reason)
+        return mask, False, reason
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+
+    def image_height(self, image_3d_4d):
+        return image_3d_4d.size()[1]
+
+    def image_width(self, image_3d_4d):
+        return image_3d_4d.size()[2]
+
+
+
+##################################################################################################################
+# BK Create Empty Mask For Image
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKCreateEmptyMaskForImage:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image":("IMAGE",{"min": 0.0, "max": 100.0}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK",)  # This specifies that the output will be text
+    RETURN_NAMES = ("mask",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Create Empty Mask For Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, image):
+        if image is None:
+            raise ValueError(f"Image is None. There is no image data to create a mask from.")
+
+        return (self.create_empty_opaque_3d_image(self.image_height(image), self.image_width(image)),)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+
+    def image_height(self, image_3d_4d):
+        return image_3d_4d.size()[1]
+
+    def image_width(self, image_3d_4d):
+        return image_3d_4d.size()[2]
 
 ##################################################################################################################
 # BK Load Image By Path
@@ -5640,6 +5824,9 @@ NODE_CLASS_MAPPINGS = {
     "BK Mask Square And Pad": BKMaskSquareAndPad,
     "BK Has Mask": BKHasMask,
     "BK Bool Not": BKBoolNot,
+    "BK Add Mask Box": BKAddMaskBox,
+    "BK Create Empty Mask For Image": BKCreateEmptyMaskForImage,
+
 }
 
 # TODO: NODES: Create node that will save a json, with the hash of the model, the link to download it, and what resource it is from, then create a node that will use that information to download it? Or maybe instead of a json have it as readable text for anthony?
