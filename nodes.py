@@ -4015,7 +4015,7 @@ class BKCropAndPad:
         self.minimum_image_size = 64
         # This ratio comes from testing 30,000+ real single subject images TBD
         # self.head_clearance_ratio = 0.18 
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
