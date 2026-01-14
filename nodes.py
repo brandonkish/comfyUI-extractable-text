@@ -3532,6 +3532,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3569,11 +3570,14 @@ class BKSaveImage:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True,mask_optional=True):
+    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True,mask_optional=None):
         return float("nan")
 
     
-    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=True):
+    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=None):
+        self.print_debug("########################################### SAVE IMAGE ###########################################")
+        
+        
         if filename is None:
             raise ValueError(f"Please enter a name to save the file as.")
 
@@ -3592,7 +3596,10 @@ class BKSaveImage:
             folder_path = os.path.join(folder_path, subfolder)
 
         # only add seed to name if option is toggled
+
+        self.print_debug(f"add_seed_to_name: {add_seed_to_name}")
         if add_seed_to_name:
+            self.print_debug(f"seed_optional: {seed_optional}")
             if seed_optional:
                 filename = f"{filename}_{seed_optional}"
             else:
@@ -3616,9 +3623,11 @@ class BKSaveImage:
                 print(f'Image saved to: {savedpath}')
             else:
                 print(f'Images saved to: {filepath}_###_{name_suffix}.png')
-
+        
+            self.print_debug("##################################################################################################")
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
         else:
+            self.print_debug("##################################################################################################")
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
 
 
@@ -3688,6 +3697,10 @@ class BKSaveImage:
             img.save(filepath_w_ext, pnginfo=metadata, optimize=True)
             img_count += 1
         return filepath_w_ext
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
 
     
 class BKGetLastFolderName:
@@ -4002,7 +4015,7 @@ class BKCropAndPad:
         self.minimum_image_size = 64
         # This ratio comes from testing 30,000+ real single subject images TBD
         # self.head_clearance_ratio = 0.18 
-        self.is_debug = False
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4072,7 +4085,10 @@ class BKCropAndPad:
 
         # Get the bounding box of the person from the mask
         person_bounding_box = self.get_person_bounding_box(person_mask)
+        image = self.draw_bounding_box_on_image(image, person_bounding_box, color=(1.0, 0.0, 0.0))
+        
         crop_box = self.get_crop_bounding_box(person_bounding_box, image, desired_size)
+        image = self.draw_bounding_box_on_image(image, crop_box, color=(0.0, 1.0, 0.0))
 
         self.print_box(person_bounding_box, label="PersonBox")
         self.print_box_values(crop_box, label="Crop Box")
@@ -4108,8 +4124,29 @@ class BKCropAndPad:
         cropped_outpaint_mask = self.convert_4d_to_3d(cropped_outpaint_mask)
         combined_mask = self.convert_4d_to_3d(combined_mask)
 
+        
+
         self.print_debug("##################################################################################################")
         return cropped_image, cropped_person_mask, cropped_user_mask, cropped_outpaint_mask, combined_mask, is_need_outpaint
+    
+    def draw_bounding_box_on_image(self, image, box, color=(1.0, 1.0, 0.0)):
+        
+        if not self.is_debug:
+            return image
+        
+        # Draw Center Point in green
+        image = self.draw_circle_rgb(image, self.box_center_x(box), self.box_center_y(box), color, 10)  # Green dot at center of person box
+        
+        #Draw Anchor Point in blue
+        image = self.draw_circle_rgb(image, self.box_left(box), self.box_top(box), color, 20)  # Blue dot at top-left of person box
+
+        return image
+
+    def box_center_x(self, box):
+        return box[1] + box[3] // 2
+    
+    def box_center_y(self, box):
+        return box[0] + box[2] // 2
     
     def is_crop_box_taller_than_image(self, image, crop_box):
         return self.image_height(image) > self.box_height(crop_box)
@@ -4201,6 +4238,7 @@ class BKCropAndPad:
 
         # Get non-zero indices of the person_mask (where the person is located)
         # Person_mask is a set of masks, not a single mask, so we take the first one
+        # each indice is in (y, x) format
         non_zero_indices = torch.nonzero(person_mask[0])
 
         # If no non-zero values exist, raise an error
@@ -4220,12 +4258,12 @@ class BKCropAndPad:
         height = y_max.item() - y_min.item() + 1
 
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-        return (left, top, height, width)
+        return (top, left, height, width)
 
     def box_horizontal_center(self, box):
         return self.box_left(box) + (self.box_width(box) // 2)
 
-    def box_vertical_center(self, box):
+    def box_top_anchor_point(self, box):
         return self.box_top(box) + (self.box_height(box) // 2)
 
     def image_height(self, image_3d_4d):
@@ -4257,15 +4295,63 @@ class BKCropAndPad:
         # NOTE: the flipper methods are pass by reference, and called inside of the _find_center_of_box method
         left = self.find_box_anchor_point(self.image_width(image), 
                                                       size, 
-                                                      self.box_horizontal_center(person_bounding_box),
+                                                      self.box_left(person_bounding_box),
                                                       self.box_width(person_bounding_box))
 
         top = self.find_box_anchor_point(self.image_height(image), 
                                                       size, 
-                                                      self.box_vertical_center(person_bounding_box),
+                                                      self.box_top(person_bounding_box),
                                                       self.box_height(person_bounding_box))
 
         return (top, left, size, size)
+    
+    def draw_circle_rgb(self,
+        images: np.ndarray,
+        x: int,
+        y: int,
+        color: tuple,
+        radius: int
+    ) -> np.ndarray:
+        """
+        Draw a filled circle on a batch of RGB images.
+
+        Parameters
+        ----------
+        images : np.ndarray
+            Image tensor of shape [batch_size, height, width, 3]
+        x : int
+            X coordinate (column)
+        y : int
+            Y coordinate (row)
+        color : tuple or list
+            RGB color (R, G, B)
+        radius : int
+            Circle radius in pixels
+
+        Returns
+        -------
+        np.ndarray
+            Modified image tensor
+        """
+
+
+
+        assert images.ndim == 4 and images.shape[-1] == 3, \
+            "Expected image shape [B, H, W, 3]"
+
+        batch_size, height, width, _ = images.shape
+
+        # Create coordinate grid
+        yy, xx = np.ogrid[:height, :width]
+
+        # Circle mask
+        mask = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
+
+        # Apply color to all images in batch
+        for c in range(3):
+            images[:, mask, c] = color[c]
+
+        return images
 
     def find_box_anchor_point(self, image_size, box_size, person_anchor_point, person_size):
 
@@ -4289,15 +4375,22 @@ class BKCropAndPad:
         return False
     
     def get_closest_anchor_point_within_bounds(self, image_size, box_size, person_anchor_point, person_size):
+        self.print_debug(f"================================== GET CLOSEST ANCHOR POINT ==================================")
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
         person_center = person_anchor_point + (person_size // 2)
+        self.print_debug(f"person_anchor_point[{person_anchor_point}] + (person_size[{person_size}] // 2) = person_center[{person_center}]")
         ideal_anchor_point = person_center - (box_size // 2)
+        self.print_debug(f"ideal_anchor_point = person_center[{person_center}] - (box_size[{box_size}] // 2) = ideal_anchor_point[{ideal_anchor_point}]")
 
         lower_bound = 0
+        self.print_debug(f"lower_bound = 0")
         upper_bound = image_size - box_size
+        self.print_debug(f"upper_bound = image_size[{image_size}] - box_size[{box_size}] = upper_bound[{upper_bound}]")
 
+        result = self.clamp(ideal_anchor_point, lower_bound, upper_bound)
+        self.print_debug(f"clamp(ideal_anchor_point[{ideal_anchor_point}], lower_bound[{lower_bound}], upper_bound[{upper_bound}]) = result[{result}]")
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-        return self.clamp(ideal_anchor_point, lower_bound, upper_bound)
+        return result
 
     def clamp(self, value, lower, upper):
         return max(min(value, upper), lower)
