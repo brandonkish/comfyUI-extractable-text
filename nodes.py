@@ -1,12 +1,12 @@
 from email.mime import image
 from torch import Tensor
 import os
-
 import scipy.ndimage as ndi
 from io import StringIO
 import hashlib
 import torch
 import torch.nn.functional as F
+import shutil
 import pandas as pd
 import itertools
 from datetime import datetime
@@ -29,7 +29,6 @@ import node_helpers
 from pathlib import Path
 import latent_preview
 from comfy.samplers import KSampler
-import os
 import csv
 import glob
 
@@ -1916,88 +1915,198 @@ class BKFileSelector:
         # Return the requested information
         return (filename, source_path, extension, full_path, total_files_found, file_list, file_list_w_idx, status)
 
-import shutil
-class BKMoveFile:
+##################################################################################################################
+# BK Move File
+##################################################################################################################
+
+class BKMoveOrCopyFile:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
         # Define the types of inputs your node accepts (single "text" input)
         return {
             "required": {
+                "mode": (["Skip if exists", "Overwrite", "Rename if exists"], {"default": "Skip if exists" ,"tooltip": "How to handle if the destination file already exists."}),
+                "operation": (["Move", "Copy"], {"default": "Copy", "tooltip": "Whether to move or copy the file."}),
+                "src_folder": ("STRING", {"default": "","tooltip": "Absolute folder path, or will apply relative path to inside of output folder."}),
                 "src_filename": ("STRING", {"default": "filename","tooltip": "Filename of source file."}),
-                "src_folder_path": ("STRING", {"default": "","tooltip": "Folder path of source file."}),
-                "src_extension": ("STRING", {"default": "png","tooltip": "Extension of source file"}),
-                "dest_filename": ("STRING", {"default": "filename","tooltip": "Filename of destination file."}),
-                "dest_folder_path": ("STRING", {"default": "","tooltip": "Folder path of destination file."}),
-                "dest_extension": ("STRING", {"default": "png","tooltip": "Extension of destination file"}),
-                "dest_subfolder": ("STRING", {"default": "","tooltip": "Subfolder in 'dest_subfolder' to save the destination file in."}),
+                "src_extension": ("STRING", {"default": "png","tooltip": "If empty, will keep same extension as source file. Else will change to this extension."}),
+                "dest_folder": ("STRING", {"default": "moved","tooltip": "Absolute folder path, or will apply relative path to inside of src folder path."}),
+                "change_filename_to": ("STRING", {"default": "","tooltip": "Filename of destination file."}),
+                "change_extension_to": ("STRING", {"default": "","tooltip": "If empty, will keep same extension as source file. Else will change to this extension."}),
                 "is_move_file": ("BOOLEAN",{"default": True}),
                 
             }
         }
     
     RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("dest_filename","dest_folder_path", "dest_extension","dest_full_path",)
+    RETURN_NAMES = ("dest_filename","dest_absolute_folder", "dest_extension","dest_file_path", "status")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
-    LABEL = "BK Move File"  # Default label text
+    LABEL = "BK Move Or Copy File"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, src_filename, src_folder_path, src_extension, dest_filename, dest_folder_path, dest_extension,dest_subfolder, is_move_file):
+    def IS_CHANGED(self, src_filename, src_folder, src_extension, change_filename_to, dest_folder, change_extension_to, is_move_file, operation = "Copy", mode = "Overwrite"):
         return float("nan")
-
-    def process(self, src_filename, src_folder_path, src_extension, dest_filename, dest_folder_path, dest_extension, is_move_file, dest_subfolder=None):
-        
-        if is_move_file:
-            # Normalize the source and destination folder paths to handle both Windows and Python-style paths
-            src_folder_path = os.path.normpath(src_folder_path)
-            dest_folder_path = os.path.normpath(dest_folder_path)
-            
-            # Construct the full source file path
-            src_full_path = os.path.join(src_folder_path, src_filename + src_extension)
-
-            print(f"src_full_path: [{src_full_path}]")
-
-            # If the destination extension is provided, make sure the file gets the correct extension
-            if dest_extension:
-                dest_filename = f"{os.path.splitext(dest_filename)[0]}{dest_extension}"
-
-            # Construct the full destination file path
-            if dest_subfolder:
-                dest_full_path = os.path.join(dest_folder_path, dest_subfolder, dest_filename)
-            else:
-                dest_full_path = os.path.join(dest_folder_path, dest_filename)
-
-            print(f"dest_full_path: [{dest_full_path}]")
-
-            # Check if the source file exists before attempting to move it
-            if not os.path.isfile(src_full_path):
-                raise Exception(f"Source file {src_full_path} not found. Please check the path.")
-
-            # Try moving the file using os.rename()
-            try:
-
-                # Ensure the destination folder exists, create it if it doesn't
-                dest_folder = os.path.dirname(dest_full_path)
-                if not os.path.exists(dest_folder):
-                    print(f"Destination folder does not exist. Creating folder: {dest_folder}")
-                    os.makedirs(dest_folder)  # Creates the destination folder and any missing intermediate folders
-
-                # os.rename() can be used to move a file
-                os.rename(src_full_path, dest_full_path)
-                return (dest_filename, dest_folder_path, dest_extension, dest_full_path)
-            except FileNotFoundError as e:
-                raise Exception(f"Source file {src_full_path} not found. - [{e}]")
-            except PermissionError as e:
-                raise Exception(f"Permission denied while moving {src_full_path}. - [{e}]")
-            except Exception as e:
-                raise Exception(f"An error occurred while moving the file: {e}")
+    
+    def get_dest_file_name(self, filename, src_filename):
+        if not filename:
+            return src_filename
         else:
-            return ("", "", "", "")
+            return filename
+    
+    def process(self, src_filename, src_folder, src_extension, change_filename_to, dest_folder, change_extension_to, is_move_file, operation = "Copy", mode = "Overwrite"):
+        self.print_debug("######################################### BK MOVE FILE ###########################################")
+        
+        if not src_filename:
+            raise ValueError("Source filename is empty. Please provide a valid source filename.")
+        
+        if not src_extension:
+            raise ValueError("Source extension is empty. Please provide a valid source file extension.")
+        
+        if not src_folder:
+            raise ValueError("Source folder is empty. Please provide a valid source folder path.")
 
+
+        src_folder = os.path.normpath(src_folder)
+        if dest_folder:
+            dest_folder = os.path.normpath(dest_folder)
+
+        src_abs_folder = self.get_abs_folder(src_folder, self.output_dir)
+        src_file_path = self.get_file_path(src_abs_folder, src_filename, src_extension)
+
+        change_filename_to = self.get_dest_file_name(change_filename_to, src_filename)
+
+        dest_extension = self.get_dest_ext(src_extension, change_extension_to)
+
+        dest_abs_folder = self.get_abs_folder(dest_folder, src_abs_folder)
+        dest_file_path = self.get_file_path(dest_abs_folder, change_filename_to, dest_extension)
+
+        status = f"Moved file {src_file_path} to {dest_file_path}."
+
+        if not is_move_file:
+            status = self.set_status("is_move_file is set to False, skipping move operation.")
+            return (change_filename_to, dest_abs_folder, dest_extension,dest_file_path, status)
+        
+        # Check if the source file exists before attempting to move it
+        if self.is_file_missing(src_file_path):
+            raise Exception(f"Source file {src_file_path} not found. Please check the path.")
+        
+        if self.is_file_exists(dest_file_path):
+            if mode == "Skip if exists":
+                status = self.set_status(f"Destination file {dest_file_path} already exists. Mode set to 'Skip if exists'. Skipping move operation.")
+                return (change_filename_to, dest_abs_folder, dest_extension,dest_file_path, status)
+            
+            elif mode == "Rename if exists":
+                new_dest_file_path = self.rename_file_if_exists(dest_file_path)
+                status = self.set_status(f"Destination file [{dest_file_path}] already exists. Mode set to 'Rename if exists'. Renaming to [{new_dest_file_path}].")
+                dest_file_path = new_dest_file_path
+            
+            else:
+                status = self.set_status(f"Destination file [{dest_file_path}] already exists. Mode set to 'overwrite'. Overwriting file.")
+                dest_file_path = dest_file_path
+
+
+        try:
+            if dest_file_path == src_file_path:
+                status = self.set_status(f"Source file and destination file are the same [{src_file_path}]. No move needed.")
+                return (change_filename_to, dest_abs_folder, dest_extension, dest_file_path, status)
+
+            self.create_folder_if_missing(dest_abs_folder)
+
+            if operation == "Copy":
+                self.copy_file(src_file_path, dest_file_path)
+            elif operation == "Move":
+                self.move_file(src_file_path, dest_file_path)
+            else:
+                raise ValueError(f"Invalid operation mode: {mode}. Supported modes are 'Move' and 'Copy'.")
+
+            self.print_debug("##################################################################################################")
+            return (change_filename_to, dest_abs_folder, dest_extension, dest_file_path, status)
+        except FileNotFoundError as e:
+            raise Exception(f"Source file {src_file_path} not found. - [{e}]")
+        except PermissionError as e:
+            raise Exception(f"Permission denied while moving {src_file_path}. - [{e}]")
+    
+    def change_file_extension(self, filename, new_extension):
+        base = os.path.splitext(filename)[0]
+        if not new_extension.startswith('.'):
+            new_extension = '.' + new_extension
+        return base + new_extension
+    
+    def set_relative_path_to_output_folder(self, path):
+        return os.path.join(self.output_dir, path)
+    
+    def get_absolute_folder_path(self, root_folder, path):
+        return os.path.join(root_folder, path)
+
+    def is_relative_path(self, path):
+        return not os.path.isabs(path)
+    
+    def get_file_path(self, folder, filename, extension):
+        return os.path.join(folder, f"{filename.strip(".")}.{extension.lower().strip(".")}")
+    
+    def is_dest_ext_specified(self, dest_extension):
+        return dest_extension not in ("", None)
+
+    def get_dest_ext(self, src_ext, dest_ext):
+        if self.is_dest_ext_specified(dest_ext):
+            return dest_ext.lower().strip(".")
+        else:
+            return src_ext.lower().strip(".")
+    
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def is_file_missing(self, file_path):
+        return not os.path.isfile(file_path)
+    
+    def is_file_exists(self, file_path):
+        return os.path.isfile(file_path)
+    
+    def set_status(self, status):
+        print(f"BKMoveFile: {status}")
+        return status
+    
+    def get_folder_path(self, file_path):
+        return os.path.dirname(file_path)
+    
+    def create_folder_if_missing(self, folder_path):
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+            self.print_debug(f"Created missing folder: {folder_path}")
+
+    def move_file(self, src_path, dest_path):
+        os.rename(src_path, dest_path)
+        self.print_debug(f"Moved file from [{src_path}] to [{dest_path}]")
+
+    def copy_file(self, src_path, dest_path):
+        shutil.copy(src_path, dest_path)
+        self.print_debug(f"Copied file from [{src_path}] to [{dest_path}]")
+
+    def rename_file_if_exists(self, dest_file_path):
+        base, extension = os.path.splitext(dest_file_path)
+        counter = 1
+        new_dest_file_path = f"{base}_{counter}{extension}"
+        while os.path.isfile(new_dest_file_path):
+            counter += 1
+            new_dest_file_path = f"{base}_{counter}{extension}"
+        return new_dest_file_path
+
+    
 
         
 class BKFileSelectNextMissing:
@@ -4807,11 +4916,11 @@ class BKMaskSquareAndPad:
         return mask
 
 ##################################################################################################################
-# BK Has Mask
+# BK Mask Test
 ##################################################################################################################
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-class BKHasMask:
+class BKMaskTest:
     def __init__(self):
         self.minimum_image_size = 64
         self.is_debug = False
@@ -4822,6 +4931,8 @@ class BKHasMask:
         return {
             "required": {
                 "mask": ("MASK",),
+                "num_of_masks": (["Is Equal To", "Is Greater Than", "Is Less Than"], {"default":"Is Greater Than"}),
+                "value": ("INT", {"default":0}),
             },
             "optional": {
             },
@@ -4829,28 +4940,39 @@ class BKHasMask:
             },
         }
     
-    RETURN_TYPES = ("MASK", "INT", "BOOLEAN")  # This specifies that the output will be text
-    RETURN_NAMES = ("mask", "count", "has_mask")
+    RETURN_TYPES = ("MASK", "INT", "BOOLEAN", "BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("mask", "count", "has_mask", "operation_result")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
-    LABEL = "BK Has Mask"  # Default label text
+    LABEL = "BK Mask Test"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, mask):
+    def IS_CHANGED(self, mask, num_of_masks, value):
         return float("nan")
 
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-    def process(self, mask):
+    def process(self, mask, num_of_masks, value):
         self.print_debug("###################################### BK IS HAS MASK ############################################")
         
         is_has_mask = not self.is_mask_empty(mask)
         count = self.image_batch_size(mask)
 
-        self.print_debug("##################################################################################################")
-        return (mask, count, is_has_mask)
+        if count == 1 and not is_has_mask:
+            count = 0
 
+        if num_of_masks == "Is Equal To":
+            result = (count == value)
+        elif num_of_masks == "Is Greater Than":
+            result = (count > value)
+        elif num_of_masks == "Is Less Than":
+            result = (count < value)
+        else:
+            raise ValueError(f"Unsupported operation: {num_of_masks}")
+
+        self.print_debug("##################################################################################################")
+        return (mask, count, is_has_mask, result)
     
     def is_mask_empty(self, mask):
         if mask is None:
@@ -5907,7 +6029,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Is A Less Than B INT": BKIsALessThanBINT,
     "BK Is A Less Than Or Equal To B INT": BKIsALessThanOrEqualToBINT,
     "BK File Select Next Unprocessed": BKFileSelectNextUnprocessed,
-    "BK Move File": BKMoveFile,
+    "BK Move Or Copy File": BKMoveOrCopyFile,
     "BK Get Matching Mask": BKGetMatchingMask,
     "BK Get Last Folder Name": BKGetLastFolderName,
     "BK Next Unprocessed File In Folder": BKNextUnprocessedFileInFolder,
@@ -5917,7 +6039,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Crop And Pad": BKCropAndPad,
     "BK Body Ratios": BKBodyRatios,
     "BK Mask Square And Pad": BKMaskSquareAndPad,
-    "BK Has Mask": BKHasMask,
+    "BK Mask Test": BKMaskTest,
     "BK Bool Not": BKBoolNot,
     "BK Add Mask Box": BKAddMaskBox,
     "BK Create Empty Mask For Image": BKCreateEmptyMaskForImage,
