@@ -5036,6 +5036,63 @@ class BKBoolNot:
     def print_debug(self, string):
         if self.is_debug:
             print(string)
+
+##################################################################################################################
+# BK Bool Operation
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKBoolOperation:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "bool_a": ("BOOLEAN",),
+                "operation": (["AND", "OR", "XOR"], {"default":"AND"}),
+                "bool_b": ("BOOLEAN",),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("result_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Boolean Operation"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, bool_a, operation, bool_b):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, bool_a, operation, bool_b):
+        self.print_debug("##################################### BK BOOLEAN OPERATION ############################################")
+        
+        if operation == "AND":
+            result_boolean = bool_a and bool_b
+        elif operation == "OR":
+            result_boolean = bool_a or bool_b
+        elif operation == "XOR":
+            result_boolean = bool_a != bool_b
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+
+        self.print_debug("##################################################################################################")
+        return (result_boolean,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
     
 ##################################################################################################################
 # BK Add Mask Box
@@ -6043,6 +6100,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Bool Not": BKBoolNot,
     "BK Add Mask Box": BKAddMaskBox,
     "BK Create Empty Mask For Image": BKCreateEmptyMaskForImage,
+    "BK Bool Operation": BKBoolOperation,
 
 }
 
