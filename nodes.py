@@ -4203,8 +4203,8 @@ class BKCropAndPad:
         self.print_box(person_bounding_box, label="PersonBox")
         self.print_box_values(crop_box, label="Crop Box")
 
-        is_need_vertical_outpaint = self.is_crop_box_wider_than_image(image, crop_box)
-        is_need_horizontal_outpaint = self.is_crop_box_taller_than_image(image, crop_box)
+        is_need_vertical_outpaint = self.is_crop_box_taller_than_image(image, crop_box)
+        is_need_horizontal_outpaint = self.is_crop_box_wider_than_image(image, crop_box)
 
         if is_need_horizontal_outpaint:
             self.flip_horizontal_pad_side()
@@ -4218,8 +4218,14 @@ class BKCropAndPad:
         cropped_person_mask = self.crop_3d_mask_and_pad_opaque(person_mask, crop_box)
 
         # resize empty outpaint mask by padding amount in the direction in the axis of the outpaint
+        self.print_debug(f"is_need_vertical_outpaint: {is_need_vertical_outpaint}")
+        self.print_debug(f"is_need_horizontal_outpaint: {is_need_horizontal_outpaint}")
+        self.print_debug(f"height: {self.image_height(image)}")
+        self.print_debug(f"width: {self.image_width(image)}")
         height_for_padding = self.add_padding(self.image_height(image), outpaint_padding, is_need_vertical_outpaint)
         width_for_padding = self.add_padding(self.image_width(image), outpaint_padding, is_need_horizontal_outpaint)
+        self.print_debug(f"height: {height_for_padding}")
+        self.print_debug(f"width: {width_for_padding}")
 
         empty_outpaint_center_part_mask = self.create_empty_3d_transparent_mask(height_for_padding, width_for_padding)
         cropped_outpaint_mask = self.crop_3d_mask_and_pad_transparent(empty_outpaint_center_part_mask, crop_box)
@@ -4270,10 +4276,12 @@ class BKCropAndPad:
         return box[0] + box[2] // 2
     
     def is_crop_box_taller_than_image(self, image, crop_box):
-        return self.image_height(image) > self.box_height(crop_box)
+        self.print_debug(f"if image_height[{self.image_height(image)}] > box_height[{self.box_height(crop_box)}] vert outpaint needed") 
+        return self.box_height(crop_box) > self.image_height(image)
     
     def is_crop_box_wider_than_image(self, image, crop_box):
-        return self.image_width(image) > self.box_width(crop_box)
+        self.print_debug(f"if image_width[{self.image_width(image)}] > box_width[{self.box_width(crop_box)}] horiz outpaint needed")
+        return self.box_width(crop_box) > self.image_width(image)
     
     def clamp_desired_size(self, desired_size, minimum, maximum):
         return max(min(desired_size, maximum), minimum)
