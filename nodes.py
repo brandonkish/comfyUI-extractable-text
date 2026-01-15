@@ -40,7 +40,17 @@ try:
 except ImportError:
     piexif_loaded = False
 
+HEADER_LENGTH = 100
 
+def print_debug_header(is_debug, name):
+    if is_debug:
+        name = f" DEBUG {name} "
+        sides = (HEADER_LENGTH - len(name)) // 2
+        print(f"{'#' * sides}{name}{'#' * sides}")
+
+def print_debug_bar(is_debug):
+    if is_debug:
+        print(f"{'#' * HEADER_LENGTH}")
 
 def make_filename(filename):
     return "image" if filename == "" else filename
@@ -1960,7 +1970,7 @@ class BKMoveOrCopyFile:
             return filename
     
     def process(self, src_filename, src_folder, src_extension, change_filename_to, dest_folder, change_extension_to, is_move_file, operation = "Copy", mode = "Overwrite"):
-        self.print_debug("######################################### BK MOVE FILE ###########################################")
+        print_debug_header(self.is_debug, "BK MOVE OR COPY FILE")
         
         if not src_filename:
             raise ValueError("Source filename is empty. Please provide a valid source filename.")
@@ -2025,7 +2035,7 @@ class BKMoveOrCopyFile:
             else:
                 raise ValueError(f"Invalid operation mode: {mode}. Supported modes are 'Move' and 'Copy'.")
 
-            self.print_debug("##################################################################################################")
+            print_debug_bar(self.is_debug)
             return (change_filename_to, dest_abs_folder, dest_extension, dest_file_path, status)
         except FileNotFoundError as e:
             raise Exception(f"Source file {src_file_path} not found. - [{e}]")
@@ -2540,10 +2550,16 @@ class BKNextUnprocessedImageInFolder:
 
         # Return the requested information
         return (filename, folder, extension, full_path, remaining_files, file_list, file_list_w_idx, status)
-    
+
+
+##################################################################################################################
+# BK AI Text 0Cleaner
+##################################################################################################################
+
 class BKAITextCleaner:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2569,6 +2585,7 @@ class BKAITextCleaner:
         
 
     def process(self, text, exclude):
+        print_debug_header(self.is_debug, "BK AI TEXT CLEANER")
         # Convert excluded_tags into a list for easy lookup
         excluded_tags_list = exclude.split(',')
 
@@ -2578,7 +2595,12 @@ class BKAITextCleaner:
         
         # Use regex to match the excluded tags and split the text
         idx = 0
+
+        self.print_debug(f"len(text): {len(text)}")
+        
+
         while idx < len(text):
+            self.print_debug(f"idx < len(text): {idx < len(text)}  ")
             matched = False
             for tag in excluded_tags_list:
                 if text[idx:idx+len(tag)] == tag:
@@ -2619,8 +2641,13 @@ class BKAITextCleaner:
         # Remove all new lines from the cleaned text
         cleaned_text = cleaned_text.replace('\n','')
 
+        print_debug_bar(self.is_debug)
         # Return the cleaned text as a tuple
         return (cleaned_text,)
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
 
    
 class BKRemoveMaskAtIdx:
@@ -3684,7 +3711,7 @@ class BKSaveImage:
 
     
     def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=None):
-        self.print_debug("########################################### SAVE IMAGE ###########################################")
+        print_debug_header(self.is_debug, "BK SAVE IMAGE NODE")
         
         
         if filename is None:
@@ -3733,10 +3760,10 @@ class BKSaveImage:
             else:
                 print(f'Images saved to: {filepath}_###_{name_suffix}.png')
         
-            self.print_debug("##################################################################################################")
+            print_debug_bar(self.is_debug)
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
         else:
-            self.print_debug("##################################################################################################")
+            print_debug_bar(self.is_debug)
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
 
 
@@ -3900,7 +3927,7 @@ class BKGetMatchingMask:
             return mask
         
     def process(self, all_masks, ref_mask, notify_on_no_match, image_name = "UNKNOWN", user_mask = None):
-        self.print_debug("################################### BK GET MATCHING MASK #########################################")
+        print_debug_header(self.is_debug, "BK GET MATCHING MASK")
         
         # Prevent errors by fixing NoneType mask values to standard ComfyUI default empty mask
         user_mask  = self.replace_nontype_with_default_comfyui_mask(user_mask)
@@ -3965,7 +3992,7 @@ class BKGetMatchingMask:
         self.print_debug(f"combined_mask.size()[{combined_mask.size()}]")
         self.print_debug(f"non_matching_count[{non_matching_count}]")
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return (found_mask, non_matching_masks, combined_mask, is_found)
     
     def combine_masks(self, user_mask, non_matching_mask):
@@ -4164,10 +4191,12 @@ class BKCropAndPad:
     
     def flatten_all_batched_masks_to_one_mask(self, masks):
         return masks.max(dim=0, keepdim=True)[0]
+    
+
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, image, person_mask, desired_size, outpaint_padding, image_name="NA", user_mask=None):
-        self.print_debug("##################################### BK Crop And Pad ############################################")
+        self.print_debug_header(self.is_debug,"BK CROP AND PAD")
         # Initialize output variables and constants
 
         if self.image_batch_size(person_mask) > 1:
@@ -4247,7 +4276,7 @@ class BKCropAndPad:
 
         
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return cropped_image, cropped_person_mask, cropped_user_mask, cropped_outpaint_mask, combined_mask, is_need_outpaint
     
     def add_padding(self, original_size, padding, is_need_outpaint):
@@ -4821,7 +4850,7 @@ class BKMaskSquareAndPad:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, multi_masks, padding):
-        self.print_debug("#################################### BK MASK SQUARE AND PAD ######################################")
+        print_debug_bar(self.is_debug)
         #NOTE: Masks are [batch_size, height, width]
 
         if multi_masks is None:
@@ -4856,7 +4885,7 @@ class BKMaskSquareAndPad:
         has_mask = not self.is_mask_empty(modified_mask)
 
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return (modified_mask, count, has_mask)
     
     def recombine_a_list_of_masks(self, masks):
@@ -4974,7 +5003,7 @@ class BKMaskTest:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, mask, num_of_masks, value):
-        self.print_debug("###################################### BK IS HAS MASK ############################################")
+        print_debug_header(self.is_debug, "BK MASK TEST")
         
         is_has_mask = not self.is_mask_empty(mask)
         count = self.image_batch_size(mask)
@@ -4991,7 +5020,7 @@ class BKMaskTest:
         else:
             raise ValueError(f"Unsupported operation: {num_of_masks}")
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return (mask, count, is_has_mask, result)
     
     def is_mask_empty(self, mask):
@@ -5046,11 +5075,11 @@ class BKBoolNot:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, boolean):
-        self.print_debug("##################################### BK BOOLEAN NOT ############################################")
+        print_debug_header(self.is_debug, "BK BOOLEAN NOT")
         
         not_boolean = not boolean
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return (not_boolean,)
 
     def print_debug(self, string):
@@ -5096,7 +5125,7 @@ class BKBoolOperation:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, bool_a, operation, bool_b):
-        self.print_debug("##################################### BK BOOLEAN OPERATION ############################################")
+        print_debug_header(self.is_debug, "BK BOOLEAN OPERATION")
         
         if operation == "AND":
             result_boolean = bool_a and bool_b
@@ -5107,7 +5136,7 @@ class BKBoolOperation:
         else:
             raise ValueError(f"Unsupported operation: {operation}")
 
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         return (result_boolean,)
 
     def print_debug(self, string):
@@ -5162,7 +5191,8 @@ class BKAddMaskBox:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, top, left, height, width, mode, mask=None):
-        self.print_debug("##################################### BK ADD MASK BOX ############################################")
+
+        print_debug_header(self.is_debug, "BK ADD MASK BOX")
         
         # Assuming mask is a 3D tensor with dimensions [batch_size, height, width]
         # If mask is None, create a new one that is the same size as the image
@@ -5211,7 +5241,7 @@ class BKAddMaskBox:
         print(status)
 
         self.print_debug(f"mask.size()[{mask.size()}]")
-        self.print_debug("##################################################################################################")
+        print_debug_bar(self.is_debug)
         
         return (mask, is_applied, status)
     
