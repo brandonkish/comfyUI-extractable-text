@@ -4216,10 +4216,13 @@ class BKCropAndPad:
 
         cropped_image = self.crop_4d_image_and_pad_white(image, crop_box)
         cropped_person_mask = self.crop_3d_mask_and_pad_opaque(person_mask, crop_box)
-        empty_outpaint_center_part_mask = self.create_empty_3d_transparent_mask(self.image_height(image), self.image_width(image))
+
+        # resize empty outpaint mask by padding amount in the direction in the axis of the outpaint
+        height_for_padding = self.add_padding(self.image_height(image), outpaint_padding, is_need_vertical_outpaint)
+        width_for_padding = self.add_padding(self.image_width(image), outpaint_padding, is_need_horizontal_outpaint)
+
+        empty_outpaint_center_part_mask = self.create_empty_3d_transparent_mask(height_for_padding, width_for_padding)
         cropped_outpaint_mask = self.crop_3d_mask_and_pad_transparent(empty_outpaint_center_part_mask, crop_box)
-        
-        cropped_outpaint_mask = self.expand_open_side_and_fill_safe(cropped_outpaint_mask, outpaint_padding)
 
         if self.is_mask_empty(user_mask):
             self.print_debug(f"user_mask empty")
@@ -4240,88 +4243,13 @@ class BKCropAndPad:
 
         self.print_debug("##################################################################################################")
         return cropped_image, cropped_person_mask, cropped_user_mask, cropped_outpaint_mask, combined_mask, is_need_outpaint
-
-
-    def expand_open_side_and_fill_safe(self, mask: torch.Tensor, padding: int) -> torch.Tensor:
-        """
-        mask: Tensor of shape [B, H, W], 0 = empty, >0 = filled
-        padding: int, number of pixels to expand the open side
-        Returns: Tensor of same shape with bounded area set to 1
-        """
-        if mask.ndim != 3:
-            raise ValueError("Mask must have shape [batch, height, width]")
-
-        B, H, W = mask.shape
-        result = mask.clone()
-
-        # ---- 1. Find non-zero indices ----
-        non_zero_idx = torch.nonzero(result)
-        if non_zero_idx.numel() == 0:
-            return result  # all masks empty
-
-        batch_idx = non_zero_idx[:, 0]
-        ys = non_zero_idx[:, 1]
-        xs = non_zero_idx[:, 2]
-
-        # ---- 2. Compute bounding boxes per batch ----
-        y_min = torch.zeros(B, dtype=torch.long)
-        y_max = torch.zeros(B, dtype=torch.long)
-        x_min = torch.zeros(B, dtype=torch.long)
-        x_max = torch.zeros(B, dtype=torch.long)
-
-        for b in range(B):
-            mask_b = batch_idx == b
-            if mask_b.sum() == 0:
-                continue
-            y_min[b] = ys[mask_b].min()
-            y_max[b] = ys[mask_b].max()
-            x_min[b] = xs[mask_b].min()
-            x_max[b] = xs[mask_b].max()
-
-        # ---- 3. Determine open sides ----
-        touches_top = y_min == 0
-        touches_bottom = y_max == H - 1
-        touches_left = x_min == 0
-        touches_right = x_max == W - 1
-
-        y_min_exp = y_min.clone()
-        y_max_exp = y_max.clone()
-        x_min_exp = x_min.clone()
-        x_max_exp = x_max.clone()
-
-        for b in range(B):
-            sides = {
-                "top": touches_top[b],
-                "bottom": touches_bottom[b],
-                "left": touches_left[b],
-                "right": touches_right[b],
-            }
-            # exactly one open side
-            open_side = [k for k, v in sides.items() if not v][0]
-
-            if open_side == "top":
-                y_min_exp[b] = max(0, y_min[b] - padding)
-            elif open_side == "bottom":
-                y_max_exp[b] = min(H - 1, y_max[b] + padding)
-            elif open_side == "left":
-                x_min_exp[b] = max(0, x_min[b] - padding)
-            elif open_side == "right":
-                x_max_exp[b] = min(W - 1, x_max[b] + padding)
-
-            # ---- 4. Clamp to tensor size to prevent errors ----
-            y_min_exp[b] = max(0, min(H - 1, y_min_exp[b]))
-            y_max_exp[b] = max(0, min(H - 1, y_max_exp[b]))
-            x_min_exp[b] = max(0, min(W - 1, x_min_exp[b]))
-            x_max_exp[b] = max(0, min(W - 1, x_max_exp[b]))
-
-        # ---- 5. Fill the bounding boxes ----
-        for b in range(B):
-            if y_min_exp[b] <= y_max_exp[b] and x_min_exp[b] <= x_max_exp[b]:
-                result[b, y_min_exp[b]: y_max_exp[b]+1, x_min_exp[b]: x_max_exp[b]+1] = 1
-
-        return result
-
     
+    def add_padding(self, original_size, padding, is_need_outpaint):
+        if is_need_outpaint:
+            return original_size - padding
+        else:
+            return original_size
+
     def draw_bounding_box_on_image(self, image, box, color=(1.0, 1.0, 0.0)):
         
         if not self.is_debug:
