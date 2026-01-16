@@ -5259,10 +5259,10 @@ class BKAddMaskBox:
         self.minimum_image_size = 64
         self.is_debug = False
         self.ONLY_IF_MISSING_MODES = {
-            "Only If Missing",
-            "Only If Missing And Vertical Image",
-            "Only If Missing And Horizontal Image",
-            "Only If Missing And Square Image",
+            "If No Mask In Region",
+            "If No Mask In Region And Vertical Image",
+            "If No Mask In Region And Horizontal Image",
+            "If No Mask In Region And Square Image",
         }
 
     @classmethod
@@ -5274,7 +5274,7 @@ class BKAddMaskBox:
                 "left":("FLOAT",{"min": 0.0, "max": 100.0}),
                 "width":("FLOAT",{"min": 0.0, "max": 100.0}),
                 "height":("FLOAT",{"min": 0.0, "max": 100.0}),
-                "mode":(["Always Apply", "Only If Missing","Only If Missing And Vertical Image","Only If Missing And Horizontal Image","Only If Missing And Square Image"], {"default":"Always Apply"}),
+                "apply":(["Always", "If Input Mask Empty","If No Mask In Region","If No Mask In Region And Vertical Image","If No Mask In Region And Horizontal Image","If No Mask In Region And Square Image"], {"default":"Always Always"}),
             },
             "optional": {
                 "mask":("MASK",),
@@ -5291,12 +5291,12 @@ class BKAddMaskBox:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, top, left, height, width, mode, mask=None):
+    def IS_CHANGED(self, top, left, height, width, apply, mask=None):
         return float("nan")
 
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-    def process(self, top, left, height, width, mode, mask=None):
+    def process(self, top, left, height, width, apply, mask=None):
 
         print_debug_header(self.is_debug, "BK ADD MASK BOX")
         
@@ -5321,26 +5321,31 @@ class BKAddMaskBox:
         is_applied = True
         status = "BKAddMaskBox: Box applied to mask"
 
-        if mode == "Only If Missing And Vertical Image":
+        if apply == "If No Mask In Region And Vertical Image":
             if self.image_height(mask) < self.image_width(mask):
-                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is less than its width [{self.image_width(mask)}]. It is not a vertical image. Skipping")
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is less than its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Vertical Image'. It is not a vertical image. Skipping")
             
-        if mode == "Only If Missing And Horizontal Image":
+        if apply == "If No Mask In Region And Horizontal Image":
             if self.image_height(mask) > self.image_width(mask):
-                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is greater than its width [{self.image_width(mask)}]. It is not a horizontal image. Skipping")
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is greater than its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Horizontal Image'. It is not a horizontal image. Skipping")
 
-        if mode == "Only If Missing And Square Image":
+        if apply == "If No Mask In Region And Square Image":
             if self.image_height(mask) != self.image_width(mask):
-                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is not equal its width [{self.image_width(mask)}]. It is not a square image. Skipping")
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is not equal its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Square Image'. It is not a square image. Skipping")
+        
+        if apply == "If Input Mask Empty":
+            if not self.is_mask_empty(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Input mask is not empty with mode 'If Input Mask Empty'. Skipping")
         
         # Check if we are in "Only If Missing" mode
-        if mode in self.ONLY_IF_MISSING_MODES:
+        if apply in self.ONLY_IF_MISSING_MODES:
             # Check if the region already has a mask applied (non-zero region)
             if mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel].sum() > 0:
                 is_applied = False
                 status = "BKAddMaskBox: Region already has a mask applied. Skipping."
                 print(status)
                 return (mask, is_applied, status)  # No mask applied if the region already has a mask in the area
+
 
         # Apply the mask in the specified region (set to 1 in the specified area)
         mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel] = 1
@@ -5373,6 +5378,13 @@ class BKAddMaskBox:
 
     def image_width(self, image_3d_4d):
         return image_3d_4d.size()[2]
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
 
 
 
