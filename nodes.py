@@ -6263,3 +6263,5 @@ NODE_CLASS_MAPPINGS = {
 
 # TODO: NODES: Create node that will save a json, with the hash of the model, the link to download it, and what resource it is from, then create a node that will use that information to download it? Or maybe instead of a json have it as readable text for anthony?
 # TODO: Update the "WORKFLOWS" section to allow for sorting, creating of folders, and moving of files
+# TODO: Create crop to mask node
+# TODO: Create Remove background based on mask node
