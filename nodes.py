@@ -2559,7 +2559,7 @@ class BKNextUnprocessedImageInFolder:
 class BKAITextCleaner:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2582,12 +2582,52 @@ class BKAITextCleaner:
     def IS_CHANGED(self, text, exclude):
         return float("nan")
     
-        
+    def sanitize_excluded_tags_to_list(self, exclude):
+        if exclude:
+            excluded_tags_list = [tag for tag in exclude.split(',') if tag]
+        else:
+            excluded_tags_list = []
+        return excluded_tags_list
+    
+    def has_not_reached_end_of_text(self, idx, text):
+        return idx < len(text)
+
+    def is_tag_found_at_index(self, text, idx, tag):
+        return text[idx:idx + len(tag)] == tag
+
+    def move_index_past_tag(self, idx, tag):
+        return idx + len(tag)
+    
+    def is_tag_not_found_at_index(self, matched):
+        return not matched
+    
+    def find_matching_tag(self, text, idx, excluded_tags_list):
+        for tag in excluded_tags_list:
+            if self.is_tag_found_at_index(text, idx, tag):
+                return tag
+        return None
+    
+    def handle_found_tag(self, tag, idx, current_part, parts):
+        if current_part:
+            parts.append(current_part)
+
+        parts.append(tag)
+        current_part = ""
+        idx = self.move_index_past_tag(idx, tag)
+
+        return idx, current_part
+    
+    def handle_regular_character(self, text, idx, current_part):
+        current_part += text[idx]
+        idx += 1
+        return current_part, idx
+
+
 
     def process(self, text, exclude):
         print_debug_header(self.is_debug, "BK AI TEXT CLEANER")
-        # Convert excluded_tags into a list for easy lookup
-        excluded_tags_list = exclude.split(',')
+        
+        excluded_tags_list = self.sanitize_excluded_tags_to_list(exclude)
 
         # Create a list of text parts
         parts = []
@@ -2597,25 +2637,14 @@ class BKAITextCleaner:
         idx = 0
 
         self.print_debug(f"len(text): {len(text)}")
-        
 
-        while idx < len(text):
-            self.print_debug(f"idx < len(text): {idx < len(text)}  ")
-            matched = False
-            for tag in excluded_tags_list:
-                if text[idx:idx+len(tag)] == tag:
-                    # If we encounter an excluded tag, add the current part and the tag itself
-                    if current_part:
-                        parts.append(current_part)
-                    parts.append(tag)
-                    current_part = ""
-                    idx += len(tag)  # Skip over the tag
-                    matched = True
-                    break
-            if not matched:
-                # Otherwise, continue adding the non-matching characters
-                current_part += text[idx]
-                idx += 1
+        while self.has_not_reached_end_of_text(idx, text):
+            tag = self.find_matching_tag(text, idx, excluded_tags_list)
+
+            if tag:
+                idx, current_part = self.handle_found_tag(tag, idx, current_part, parts)
+            else:
+                current_part, idx = self.handle_regular_character(text, idx, current_part)
 
         # If there's any remaining non-matching part, append it
         if current_part:
@@ -2625,8 +2654,6 @@ class BKAITextCleaner:
         for i in range(len(parts)):
             if parts[i] not in excluded_tags_list:
                 # Remove text inside special characters (e.g., '*' '<' '>')
-                # parts[i] = re.sub(r'([^\w\s,])\S*([^\w\s,])', '', parts[i])
-                #parts[i] = re.sub(r'([^\w\s,\-])\S*([^\w\s,\-])', '', parts[i])
                 parts[i] = re.sub(r'([^\w\s,\-\*])\S*([^\w\s,\-\*])', '', parts[i])
 
                 # Remove unwanted characters that are not letters, digits, or common punctuation
@@ -3668,7 +3695,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4990,7 +5017,7 @@ class BKMaskTest:
         }
     
     RETURN_TYPES = ("MASK", "INT", "BOOLEAN", "BOOLEAN")  # This specifies that the output will be text
-    RETURN_NAMES = ("mask", "count", "has_mask", "operation_result")
+    RETURN_NAMES = ("mask", "count", "boolean_has_mask", "boolean_operation_result")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Mask Test"  # Default label text
@@ -5138,6 +5165,85 @@ class BKBoolOperation:
 
         print_debug_bar(self.is_debug)
         return (result_boolean,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+##################################################################################################################
+# BK Image Size Test
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKImageSizeTest:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "is_image": (["Greater Than", "Less Than", "Equal To", "Greater Than Or Equal To", "Less Than Or Equal To"],),
+                "height": ("INT", {"default":"1024", "min": 1}),
+                "width": ("INT", {"default":"1024", "min": 1}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE", "BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("image", "result_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Image Size Test"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, is_image, height, width):
+        return float("nan")
+
+    def image_height(self, image):
+        return image.size()[1]
+
+    def image_width(self, image):
+        return image.size()[2]
+    
+    def is_image_greater_than(self, image, height, width):
+        return self.image_height(image) > height and self.image_width(image) > width
+    
+    def is_image_less_than(self, image, height, width):
+        return self.image_height(image) < height and self.image_width(image) < width
+    
+    def is_image_equal_to(self, image, height, width):
+        return self.image_height(image) == height and self.image_width(image) == width
+    
+# NOTE: Image tensor coordinates origin is at TOP-LEFT corner
+# NOTE: Image tensor is [batch_size, height, width, channels]
+# NOTE: Mask tensor is [batch_size, height, width]
+    def process(self, image, is_image, height, width):
+        print_debug_header(self.is_debug, "BK BOOLEAN OPERATION")
+
+
+        if is_image == "Greater Than":
+            result_boolean = self.is_image_greater_than(image, height, width)
+        elif is_image == "Less Than":
+            result_boolean = self.is_image_less_than(image, height, width)
+        elif is_image == "Equal To":
+            result_boolean = self.is_image_equal_to(image, height, width)
+        elif is_image == "Greater Than Or Equal To":
+            result_boolean = self.is_image_greater_than(image, height, width) or self.is_image_equal_to(image, height, width)
+        elif is_image == "Less Than Or Equal To":
+            result_boolean = self.is_image_less_than(image, height, width) or self.is_image_equal_to(image, height, width)
+        else:
+            raise ValueError(f"Unsupported operation: {is_image}")
+
+        print_debug_bar(self.is_debug)
+        return (image, result_boolean,)
 
     def print_debug(self, string):
         if self.is_debug:
@@ -6151,6 +6257,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Add Mask Box": BKAddMaskBox,
     "BK Create Empty Mask For Image": BKCreateEmptyMaskForImage,
     "BK Bool Operation": BKBoolOperation,
+    "BK Image Size Test": BKImageSizeTest,
 
 }
 
