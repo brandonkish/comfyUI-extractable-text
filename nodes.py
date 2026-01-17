@@ -5990,7 +5990,8 @@ class BKLoRATestingNode:
             "prompts_tsv_filepath": ("STRING", {
                 "multiline": False,
             }),
-            "test_results_folder": ("STRING",)   
+            "test_results_folder": ("STRING",),
+            "tag": ("STRING",),  
          }}
 
     RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
@@ -5998,7 +5999,6 @@ class BKLoRATestingNode:
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Testing Node"  # Default label text
-    OUTPUT_NODE = True
 
 
     def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder):
@@ -6060,6 +6060,9 @@ class BKLoRATestingNode:
                     self.print_debug(f"{filepath}.png not exists. Generating image...")
                     # Load LoRA using path
                     lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+
+                    if tag and tag.strip() != "":
+
    
 
                      # If the LoRA was loaded, apply the lora
@@ -6074,7 +6077,51 @@ class BKLoRATestingNode:
                     return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder)
                 self.print_debug(f" {filepath}.png ")
         raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
-    
+
+    def extract_metadata(file_path, buffer_size=1024):
+        """
+        Streams the file to read the beginning bytes and extracts the __metadata__ section.
+        
+        Args:
+            file_path (str): Path to the file.
+            buffer_size (int): The number of bytes to read at a time.
+        
+        Returns:
+            dict: Parsed JSON of the __metadata__ section, or None if not found.
+        """
+        # Open the file in read-only mode
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content_str = ''
+            
+            while True:
+                # Read the next chunk of the file
+                chunk = file.read(buffer_size)
+                if not chunk:
+                    break  # End of file reached
+                
+                content_str += chunk
+                
+                # Try to find the "__metadata__" key in the current chunk of data
+                start_idx = content_str.find('"__metadata__":')
+                if start_idx != -1:
+                    # Find the ending bracket of the JSON object containing __metadata__
+                    end_idx = content_str.find('}', start_idx) + 1
+                    if end_idx != -1:
+                        # Extract the JSON string containing __metadata__
+                        metadata_str = content_str[start_idx:end_idx]
+                        
+                        try:
+                            # Parse the JSON string
+                            metadata_json = json.loads(metadata_str)
+                            return metadata_json["__metadata__"]
+                        except json.JSONDecodeError:
+                            print("Error decoding JSON")
+                            return None
+
+            # If we finish reading the file and can't find __metadata__
+            print("No __metadata__ section found.")
+            return None
+        
     def get_lora_name_wo_extension(self, lora_filepath):
         return os.path.splitext(os.path.basename(lora_filepath))[0]
     
