@@ -3920,7 +3920,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
-        self.is_debug = False
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3968,6 +3968,7 @@ class BKSaveImage:
         
         if filename is None:
             raise ValueError(f"Please enter a name to save the file as.")
+        self.print_debug(f"filename: {filename}")
 
         if strip_invalid_chars:
             filename = re.sub(self.invalid_filename_chars, '', filename)
@@ -3976,6 +3977,7 @@ class BKSaveImage:
             folder_path = re.sub(self.invalid_path_chars, '', folder_path)
             subfolder = re.sub(self.invalid_path_chars, '', subfolder)
 
+        self.print_debug(f"filename: {filename}")
         # Check if the provided path is absolute or relative
         if not os.path.isabs(folder_path):
             folder_path = f"{self.output_dir.strip()}\\{folder_path}"
@@ -3992,6 +3994,7 @@ class BKSaveImage:
                 filename = f"{filename}_{seed_optional}"
             else:
                 filename = f"{filename}_NA"
+        self.print_debug(f"filename: {filename}")
 
         # Define the full file path with the correct file separator for the OS
         filepath = os.path.join(folder_path.strip(), f"{filename.strip()}")
@@ -4002,6 +4005,7 @@ class BKSaveImage:
                 if not os.path.exists(folder_path.strip()):
                     print(f'The path `{folder_path.strip()}` specified doesn\'t exist! Creating directory.')
                     os.makedirs(folder_path, exist_ok=True)  
+            self.print_debug(f"filepath: {filepath}")
 
             savedpath = self.save_images(images, filepath, extra_pnginfo, include_workflow, name_suffix, positive_optional, negative_optional, seed_optional, other_optional, mask_optional)
             
@@ -4024,8 +4028,14 @@ class BKSaveImage:
         # Having img_count outside the loop allows us to pickup where we left off for the next image
         img_count = 1
 
-        if filepath is not None and suffix is not None:
-            filepath = f"{filepath}_{suffix}"
+        if filepath is not None:
+            if suffix is None:
+                suffix = suffix.strip()
+                if suffix != "":
+                    filepath = f"{filepath}_{suffix}"
+            
+
+        self.print_debug(f"filepath: {filepath}")
 
         for image in images:
             i = 255. * image.cpu().numpy()
@@ -4051,18 +4061,22 @@ class BKSaveImage:
             # Create file path with extension
             filepath_w_ext = filepath + ".png"
             numbered_filepath_w_ext = filepath_w_ext
-
+            
             # If the file already exists, add a number to the name
             if os.path.exists(filepath_w_ext):
                 # Keep increasing the filename's number until we get one that does not exist
                 while os.path.exists(numbered_filepath_w_ext):
                     # Generate new filename with incremented img_count
+                    
                     numbered_filepath = f"{filepath}_{img_count:06d}"
                     numbered_filepath_w_ext = f"{numbered_filepath}.png"
+                    self.print_debug(f"numbered_filepath: {numbered_filepath}")
+                    self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
                     img_count += 1  # Increment the image count
 
             # Final filepath (with number if necessary)
             filepath_w_ext = numbered_filepath_w_ext
+            self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
 
             metadata = PngInfo()
             if positive_optional is not None:
@@ -4448,7 +4462,7 @@ class BKCropAndPad:
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
     def process(self, image, person_mask, desired_size, outpaint_padding, image_name="NA", user_mask=None):
-        self.print_debug_header(self.is_debug,"BK CROP AND PAD")
+        print_debug_header(self.is_debug,"BK CROP AND PAD")
         # Initialize output variables and constants
 
         if self.image_batch_size(person_mask) > 1:
@@ -5944,6 +5958,11 @@ class BKLoRATestingNode:
         self.is_debug = True
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder):
+        return float("nan")
 
     @classmethod
     def get_lora_folders(cls, file_paths):
@@ -5971,18 +5990,32 @@ class BKLoRATestingNode:
             "prompts_tsv_filepath": ("STRING", {
                 "multiline": False,
             }),
+            "test_results_folder": ("STRING",)   
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name",)
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Testing Node"  # Default label text
     OUTPUT_NODE = True
 
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder):
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
+
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
+        
+        if not prompts_tsv_filepath:
+            raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
+        
+        if not test_results_folder:
+            raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
+
+        if not os.path.isabs(test_results_folder):
+            test_results_folder = os.path.join(self.output_dir, test_results_folder)
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
@@ -6007,34 +6040,43 @@ class BKLoRATestingNode:
         if not valid_prompts or len(valid_prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
+        positive = ""
+        negative = ""
+        prompt_name = ""
+        filename = ""
+        lora_name = ""
+        lora_path = ""
 
-
-        positive, negative, name = random.choice(valid_prompts)
-        '''
-        # Process valid prompts
+        # Check to see if the image already exists, if not, process the prompt with the lora
         for prompt in valid_prompts:
-            print(f"Processing prompt: {prompt}")
-            positive, negative, name = prompt
+            for lora in found_loras:
+                lora_path = lora
+                lora_name = self.get_lora_name_wo_extension(lora)
+                positive, negative, prompt_name = prompt
+                filename = f"{prompt_name}_{lora_name}"
+                filepath = os.path.join(test_results_folder, filename)
+                self.print_debug(f"Checking if file exists: {filepath}.png")
+                if not os.path.exists(f"{filepath}.png"):
+                    self.print_debug(f"{filepath}.png not exists. Generating image...")
+                    # Load LoRA using path
+                    lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+   
 
-        # Use first matching LoRA found 
-        lora_path = matching_lora_paths[0]
+                     # If the LoRA was loaded, apply the lora
+                    if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
 
-        # Warn user if mulitple LoRAs found
-        if len(matching_lora_paths) > 1:
-            print(f"WARNING: Multiple LoRAs Found:")
-            for l in matching_lora_paths:
-                print(f"- {l}")
-            print(f"Using first LoRA found: [{lora_path}]")
-
-        # Load LoRA using path
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-        # If the LoRA was loaded, apply the lora
-        if len(lora_items) > 0:
-            for item in lora_items:
-                result = item.apply_lora(result[0], result[1])
-        '''            
-        return(result[0], result[1], "", positive, negative, name)
+                    self.print_debug(f"Returning LoRA Testing Node with LoRA: {lora_name}, Prompt Name: {prompt_name}, Filename: {filename}, Test Results Folder: {test_results_folder}")
+                    self.print_debug(f"path: {test_results_folder}\\{filename}.png")
+       
+                    print_debug_bar(self.is_debug)
+                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder)
+                self.print_debug(f" {filepath}.png ")
+        raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+    
+    def get_lora_name_wo_extension(self, lora_filepath):
+        return os.path.splitext(os.path.basename(lora_filepath))[0]
     
     def get_all_valid_prompts(self, prompts_df):
         processed_data = []
@@ -6054,7 +6096,7 @@ class BKLoRATestingNode:
                 if self.is_valid_filename(name, index):
                     if not self.is_duplicate_name(name, processed_names, index):
                         if self.is_valid_prompt(positive, index):
-                            processed_data.append(self.process_row(name, positive, negative))
+                            processed_data.append(self.process_row( positive, negative, name))
         
         return processed_data
     
@@ -6136,80 +6178,6 @@ class BKLoRATestingNode:
     def filter_strings_by_prefix(self, string_list, prefix):
         # Use list comprehension to filter strings that start with the given prefix
         return [s for s in string_list if s.startswith(prefix)]
-
-    
-
-    def pad_num(self, number, pad):
-        return str(number).zfill(pad)
-
-    def get_inc_num_betwen(self, start, end, step, num):
-        # Calculate the increment
-        increment = num * step
-        
-        # Roll over if the increment exceeds the range
-        range_size = end - start
-        if increment >= range_size:
-            increment = increment % range_size  # This is the "rollover" effect
-        
-        # Add the increment to start and return the result
-        result = start + increment
-        return result
-
-
-
-
-    
-    
-class BKSingleLoRATestNode:
-    def __init__(self):
-        self.selected_loras = SelectedLoras()
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "model": ("MODEL",),
-            "clip": ("CLIP", ),
-            "subfolder": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_prefix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_suffix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "extension": ("STRING", {
-                "multiline": False,
-                "default": ".safetensors"}),
-            
-            "idx": ("INT", {"default": 2,"tooltip": "Total number of loaders being used."}),
-            "max": ("INT", {"default": 3000,"tooltip": "The maxiumum number the loras go up to"}),
-            "min": ("INT", {"default": 2,"tooltip": "The minimum number the loras go down to."}),
-            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
-            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
-         }}
-
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "INT",)
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "lora_number")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "BK LoRA Single Lora Test Node"  # Default label text
-
-    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, idx, max, min, lora_step, zero_padding):
-        result = (model, clip,"","",0)
-        lora_number = get_nearest_step_value(min, max, lora_step, idx)
-        padded_integer_string = f"{lora_number:0{zero_padding}d}"
-        lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
-        lora_name = name_prefix + padded_integer_string + name_suffix
-        
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-        if len(lora_items) > 0:
-            for item in lora_items:
-                result = item.apply_lora(result[0], result[1])
-            
-        return(result[0],result[1],lora_name, lora_path, lora_number) 
-    
 
 def get_line_by_index(index: int, text: str) -> str:
     """
