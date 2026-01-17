@@ -6048,8 +6048,8 @@ class BKLoRATestingNode:
         lora_path = ""
 
         # Check to see if the image already exists, if not, process the prompt with the lora
-        for prompt in valid_prompts:
-            for lora in found_loras:
+        for lora in found_loras:
+            for prompt in valid_prompts:
                 lora_path = lora
                 lora_name = self.get_lora_name_wo_extension(lora)
                 positive, negative, prompt_name = prompt
