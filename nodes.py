@@ -5941,55 +5941,80 @@ class BKLoadImage:
 
 class BKLoRATestingNode:
     def __init__(self):
+        self.is_debug = True
         self.selected_loras = SelectedLoras()
+        self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
     
     @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
             "model": ("MODEL",),
             "clip": ("CLIP", ),
-            "lora_relative_path": ("STRING", {
+            "lora_folder": (lora_folder_paths,),
+            "prompts_tsv_filepath": ("STRING", {
                 "multiline": False,
             }),
-            "seed": ("INT", {"default": 0,"tooltip": "Used to determine which LoRA to use next. Set it to 'increment' to cycle through each LoRA. The node will automatically loop when the number is beyond the range of the LoRAs. No need to try to clamp this number."}),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "INT", "INT")
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "seed", "lora_num")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name",)
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK LoRA Testing Node"  # Default label text
+    OUTPUT_NODE = True
 
 
-    def get_abs_folder(self, path, root_folder):
-        if self.is_relative_path(path):
-            abs_folder = self.get_absolute_folder_path(root_folder, path)
-        else:
-            abs_folder = path
-
-        return abs_folder
-    
-    def filter_strings_by_prefix(string_list, prefix):
-        # Use list comprehension to filter strings that start with the given prefix
-        return [s for s in string_list if s.startswith(prefix)]
-
-    def get_lora(self, model, clip, lora_relative_path,seed):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath):
         result = (model, clip,"","")
 
-        
-        
-        # Get list of all loras file paths
-        all_loras = folder_paths.get_filename_list("loras")
+        prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
-        # Get all file paths that have the lora's name
-        matching_lora_paths = find_matching_files(all_loras, lora_name)
+        found_loras = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        # Thow error if no LoRAs paths were found
-        if matching_lora_paths is None:
-            ValueError(f"No matching LoRA's found with name: [{lora_name}]")
+        if found_loras is None or len(found_loras) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        else:
+            for lora in found_loras:
+                print(f"Found LoRA: [{lora}]")
+
+        prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
+
+        if prompts_df.empty:
+            raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
         
-        if len(matching_lora_paths) <= 0:
-            ValueError(f"No matching LoRA's found with name: [{lora_name}]")
+        print(f"Total rows in TSV file: {len(prompts_df)}")
+        print(prompts_df.head())
+
+        valid_prompts = self.get_all_valid_prompts(prompts_df)
+
+        if not valid_prompts or len(valid_prompts) <= 0:
+            raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
+
+
+
+        positive, negative, name = random.choice(valid_prompts)
+        '''
+        # Process valid prompts
+        for prompt in valid_prompts:
+            print(f"Processing prompt: {prompt}")
+            positive, negative, name = prompt
 
         # Use first matching LoRA found 
         lora_path = matching_lora_paths[0]
@@ -6008,41 +6033,134 @@ class BKLoRATestingNode:
         if len(lora_items) > 0:
             for item in lora_items:
                 result = item.apply_lora(result[0], result[1])
-            
-        return(result[0], result[1], lora_name, lora_path, seed)    
+        '''            
+        return(result[0], result[1], "", positive, negative, name)
+    
+    def get_all_valid_prompts(self, prompts_df):
+        processed_data = []
+        processed_names = set()  # Local set to track names we've already seen
 
-def pad_num(number, pad):
-    return str(number).zfill(pad)
+        for index, row in prompts_df.iterrows():
+            name = row.get("name", "").strip()
+            self.print_debug(f"Processing row {index + 1}: name='{name}'")
+            positive = row.get("positive", "").strip()
+            self.print_debug(f"  positive='{positive}'")
+            # Handle 'negative' column, ensure it defaults to an empty string if missing or None
+            negative = row.get("negative", "").strip() if "negative" in row else ""
+            self.print_debug(f"  negative='{negative}'")
 
-def get_inc_num_betwen(start, end, step, num):
-    # Calculate the increment
-    increment = num * step
+            # Step-by-step validation and processing
+            if self.is_valid_name(name, index):
+                if self.is_valid_filename(name, index):
+                    if not self.is_duplicate_name(name, processed_names, index):
+                        if self.is_valid_prompt(positive, index):
+                            processed_data.append(self.process_row(name, positive, negative))
+        
+        return processed_data
     
-    # Roll over if the increment exceeds the range
-    range_size = end - start
-    if increment >= range_size:
-        increment = increment % range_size  # This is the "rollover" effect
-    
-    # Add the increment to start and return the result
-    result = start + increment
-    return result
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
 
-def find_matching_files(file_paths, lora_name):
-    # List to hold the matching file paths
-    matching_files = []
-    
-    # Loop through the list of file paths
-    for file_path in file_paths:
-        # Extract the filename without the extension
-        file_name_without_extension = os.path.splitext(os.path.basename(file_path))[0]
+    def is_valid_name(self, name, row_index):
+        """Check if the 'name' is non-empty."""
+        if not name:
+            return False
+        return True
 
-        # Compare the file name (without extension) with lora_name
-        if file_name_without_extension == lora_name:
-            matching_files.append(file_path)
+    def is_valid_filename(self, name, row_index):
+        """Check if the 'name' contains invalid filename characters."""
+        if re.search(self.invalid_filename_chars, name):
+            print(f"Warning: Invalid filename characters in 'name' '{name}' at row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def is_duplicate_name(self, name, processed_names, row_index):
+        """Check if the 'name' is a duplicate."""
+        if name in processed_names:
+            print(f"Warning: Duplicate 'name' found: '{name}' at row {row_index + 1}. Only the first occurrence will be used.")
+            return True  # Skip the duplicate
+        processed_names.add(name)  # Add the name to the processed set
+        return False
+
+    def is_valid_prompt(self, prompt, row_index):
+        """Check if the 'prompt' is non-empty."""
+        if not prompt:
+            print(f"Warning: Empty 'positive' prompt in row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def process_row(self, name, positive, negative):
+        """Return a list of [name, positive, negative], ensuring negative is always a string."""
+        return [name, positive, negative if negative is not None else ""]
     
-    return matching_files
+
+    def read_file_to_dataframe(self, tsv_file_path):
+        # Read the file in binary mode and decode manually
+        try:
+            with open(tsv_file_path, 'rb') as file:
+                # Read the raw bytes
+                raw_data = file.read()
+
+                # Decode using utf-8 and ignore invalid characters
+                decoded_data = raw_data.decode('utf-8', errors='ignore')
+
+                # Use pandas to read the CSV from the decoded string
+                from io import StringIO
+                return pd.read_csv(StringIO(decoded_data), sep='\t')
+
+        except Exception as e:
+            raise Exception(f"Failed to read the TSV file. Reason: {e}")
+
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+
+
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
     
-class SingleLoRATestNode:
+    def filter_strings_by_prefix(self, string_list, prefix):
+        # Use list comprehension to filter strings that start with the given prefix
+        return [s for s in string_list if s.startswith(prefix)]
+
+    
+
+    def pad_num(self, number, pad):
+        return str(number).zfill(pad)
+
+    def get_inc_num_betwen(self, start, end, step, num):
+        # Calculate the increment
+        increment = num * step
+        
+        # Roll over if the increment exceeds the range
+        range_size = end - start
+        if increment >= range_size:
+            increment = increment % range_size  # This is the "rollover" effect
+        
+        # Add the increment to start and return the result
+        result = start + increment
+        return result
+
+
+
+
+    
+    
+class BKSingleLoRATestNode:
     def __init__(self):
         self.selected_loras = SelectedLoras()
     
@@ -6075,7 +6193,7 @@ class SingleLoRATestNode:
     RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "lora_number")
     FUNCTION = "get_lora"
     CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    LABEL = "BK LoRA Single Lora Test Node"  # Default label text
 
     def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, idx, max, min, lora_step, zero_padding):
         result = (model, clip,"","",0)
@@ -6156,7 +6274,7 @@ def parse_int(s: str) -> int:
     except (ValueError, TypeError):
         return -1
     
-class MultiLoRATestNode:
+class BKMultiLoRATestNode:
     def __init__(self):
         self.selected_loras = SelectedLoras()
     
@@ -6190,7 +6308,7 @@ class MultiLoRATestNode:
     RETURN_NAMES = ("MODEL", "CLIP","has_next", "lora_name", "lora_prefix", "lora_path", "lora_number", "remaining")
     FUNCTION = "get_lora"
     CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    LABEL = "BK Multi LoRA Test Node"  # Default label text
 
     def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, lora_list, while_loop_idx, lora_step, zero_padding):
         lora_result = (model, clip)
@@ -6260,7 +6378,7 @@ class ToUTF8:
         return(result) 
 
 
-class GetLargerValue:
+class BKGetLargerValue:
     def __init__(self):
         self.selected_loras = SelectedLoras()
     
@@ -6275,7 +6393,7 @@ class GetLargerValue:
     RETURN_NAMES = ("larger_value",)
     FUNCTION = "get_lora"
     CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    LABEL = "BK Get Larger Value"  # Default label text
 
     def get_lora(self, a, b):
         result = None
@@ -6437,9 +6555,9 @@ class LoraItem:
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Ollama Connectivity Data": JSONExtractor,
-    "Single LoRA Test Node": SingleLoRATestNode,
-    "Multi LoRA Test Node": MultiLoRATestNode,
-    "Get Larger Value": GetLargerValue,
+    # "Single LoRA Test Node": SingleLoRATestNode,
+    # "Multi LoRA Test Node": MultiLoRATestNode,
+    "Get Larger Value": BKGetLargerValue,
     "Convert To UTF8": ToUTF8,
     "BK Path Builder": BKPathBuilder,
     "BK Max Size": BKMaxSize,
@@ -6507,7 +6625,6 @@ NODE_CLASS_MAPPINGS = {
     "BK Image Size Test": BKImageSizeTest,
     "BK Get Next Caption File": BKGetNextCaptionFile,
     "BK Image Sync": BKImageSync,
-    "BK Lora Testing Node": BKLoRATestingNode,
 
 }
 
