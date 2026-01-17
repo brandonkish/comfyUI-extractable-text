@@ -2553,7 +2553,198 @@ class BKNextUnprocessedImageInFolder:
 
 
 ##################################################################################################################
-# BK AI Text 0Cleaner
+# BK Get Next Caption File
+##################################################################################################################
+
+
+class BKGetNextCaptionFile:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.processed_captions = []
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "folder": ("STRING", {"default": "","tooltip": "The node will scan the source path folder for any of the specified files, it will then return the next file that is in the source path, but not in the destination path. ex. If the source path has a file called 'image.png', and the destination folder does not, it will output the info for the 'image.png' file found in the source folder. It will keep doing this until all files in the source folder are found in the destination folder. Can use absolute or relative path, if relative, starts in output folder."}),
+                "auto_reset": ("BOOLEAN",),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "INT", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("caption Text", "filename", "folder_path", "image_extension", "remaining_files", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Get Next Caption File"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, folder, auto_reset):
+        return float("nan")
+    
+    # ---------- Main process ----------
+
+    def process(self, folder, auto_reset):
+        # Resolve folder path
+        folder_path = self.resolve_folder_path(folder)
+
+        if not os.path.isdir(folder_path):
+            raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+        # Locate caption log
+        log_path = self.get_caption_log_path(folder_path)
+
+        # Read existing log
+        logged_files = self.read_caption_log(log_path)
+
+        # Find valid caption/image pairs
+        valid_files = self.find_text_files_with_matching_images(folder_path)
+
+        # Select next unprocessed file
+        filename, image_extension = self.select_next_unlogged_file(
+            valid_files, logged_files
+        )
+
+        if filename is None:
+            if auto_reset:
+                self.clear_caption_log(log_path)
+
+            return (
+                "",
+                "",
+                folder_path,
+                "",
+                0,
+                "No remaining files to process.",
+            )
+
+        # Count remaining files
+        remaining_files = self.count_remaining_unlogged_files(
+            valid_files, logged_files, filename
+        )
+
+        # Read caption text
+        caption_text = self.read_caption_text_file(folder_path, filename)
+
+        # Update caption log
+        self.append_to_caption_log(log_path, filename)
+
+        # Auto-reset only when nothing remains
+        if auto_reset and remaining_files == 0:
+            self.clear_caption_log(log_path)
+
+        # Build status
+        status = self.build_status_text(filename, remaining_files)
+
+        return (
+            caption_text,
+            filename,
+            folder_path,
+            image_extension,
+            remaining_files,
+            status,
+        )
+
+    # ---------- Path handling ----------
+
+    def resolve_folder_path(self, folder):
+        """Determine whether the folder path is absolute or relative."""
+        if os.path.isabs(folder):
+            return os.path.normpath(folder)
+        return os.path.normpath(os.path.join(self.output_dir, folder))
+
+    def get_caption_log_path(self, folder_path):
+        """Return the full path to the caption log file."""
+        return os.path.join(folder_path, "captionlog.caplog")
+
+    # ---------- File discovery ----------
+
+    def get_supported_image_extensions(self):
+        """Return supported image file extensions."""
+        return {
+            ".png", ".jpg", ".jpeg", ".bmp",
+            ".tiff", ".tif", ".webp"
+        }
+
+    def find_text_files_with_matching_images(self, folder_path):
+        """
+        Find all .txt files that have an image file
+        with the same base name.
+        """
+        valid_files = []
+        image_extensions = self.get_supported_image_extensions()
+
+        for entry in os.listdir(folder_path):
+            if not entry.lower().endswith(".txt"):
+                continue
+
+            base_name = os.path.splitext(entry)[0]
+
+            for ext in image_extensions:
+                image_path = os.path.join(folder_path, base_name + ext)
+                if os.path.isfile(image_path):
+                    valid_files.append((base_name, ext))
+                    break
+
+        return sorted(valid_files, key=lambda x: x[0])
+
+    # ---------- Caption log handling ----------
+
+    def read_caption_log(self, log_path):
+        """Read processed filenames from captionlog.caplog."""
+        if not os.path.isfile(log_path):
+            return []
+
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def append_to_caption_log(self, log_path, filename):
+        """Append a filename to the caption log."""
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(filename + "\n")
+
+    def clear_caption_log(self, log_path):
+        """Clear the caption log file."""
+        open(log_path, "w").close()
+
+    # ---------- Selection logic ----------
+
+    def select_next_unlogged_file(self, valid_files, logged_files):
+        """Select the next file not found in the caption log."""
+        for base_name, img_ext in valid_files:
+            if base_name not in logged_files:
+                return base_name, img_ext
+        return None, None
+
+    def count_remaining_unlogged_files(self, valid_files, logged_files, current_filename):
+        """Count remaining unlogged files excluding the current one."""
+        return sum(
+            1 for base_name, _ in valid_files
+            if base_name not in logged_files and base_name != current_filename
+        )
+
+    # ---------- File reading ----------
+
+    def read_caption_text_file(self, folder_path, filename):
+        """Read the caption text file in read-only mode."""
+        txt_path = os.path.join(folder_path, filename + ".txt")
+        with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    # ---------- Status ----------
+
+    def build_status_text(self, filename, remaining_files):
+        """Build the status text."""
+        return f"Processing file [{filename}.txt] with [{remaining_files}] reamaining."
+
+    
+
+
+    
+
+##################################################################################################################
+# BK AI Text Cleaner
 ##################################################################################################################
 
 class BKAITextCleaner:
@@ -3024,7 +3215,40 @@ class BKRemoveLastFolder:
         
         return(result,)
 
+###################################################################################################################
+# BK Image Sync
+###################################################################################################################
+class BKImageSync:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
 
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "image_a": ("IMAGE", ),
+            "image_b": ("IMAGE", ),
+            "string": ("STRING", ),
+
+            }}
+    
+    @classmethod
+    def IS_CHANGED(self, image_a, image_b, string):
+        return float("nan")
+
+    RETURN_TYPES = ("IMAGE","IMAGE","STRING")
+    RETURN_NAMES = ("IMAGE_A","IMAGE_B","TEXT")
+
+    FUNCTION = "process"
+    CATEGORY = "BKNodes"
+    LABEL = "BK Image Sync"  # Default label text
+
+
+
+    def process(self, image_a, image_b, string):
+        
+        
+        # Return the image, prompt, and other property
+        return (image_a, image_b, string)
 
 class BKPromptSync:
     def __init__(self):
@@ -3688,6 +3912,7 @@ def checkpointLoader(ckpt_name):
 ##################################################################################################################
 # BK SAVE IMAGE
 ##################################################################################################################
+#TODO: Needs overhaul
 class BKSaveImage:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
@@ -3733,7 +3958,7 @@ class BKSaveImage:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True,mask_optional=None):
+    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=None):
         return float("nan")
 
     
@@ -5389,11 +5614,11 @@ class BKAddMaskBox:
 
 
 ##################################################################################################################
-# BK Create Empty Mask For Image
+# BK Create Mask For Image
 ##################################################################################################################
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-class BKCreateEmptyMaskForImage:
+class BKCreateMaskForImage:
     def __init__(self):
         self.minimum_image_size = 64
         self.is_debug = False
@@ -5403,7 +5628,8 @@ class BKCreateEmptyMaskForImage:
         # Define the types of inputs your node accepts (single "text" input)
         return {
             "required": {
-                "image":("IMAGE",{"min": 0.0, "max": 100.0}),
+                "image":("IMAGE",),
+                "mask_type": (["Empty - Background Visible", "Opaque - Background Hidden"], {"default":"Empty - Background Visible"}),
             },
             "optional": {
             },
@@ -5415,20 +5641,27 @@ class BKCreateEmptyMaskForImage:
     RETURN_NAMES = ("mask",)
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
-    LABEL = "BK Create Empty Mask For Image"  # Default label text
+    LABEL = "BK Create Mask For Image"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, image):
+    def IS_CHANGED(self, image, mask_type):
         return float("nan")
 
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-    def process(self, image):
+    def process(self, image, mask_type):
+
         if image is None:
             raise ValueError(f"Image is None. There is no image data to create a mask from.")
 
-        return (self.create_empty_opaque_3d_image(self.image_height(image), self.image_width(image)),)
+        mask = None
+        if mask_type == "Empty - Background Visible":
+            mask = self.create_empty_opaque_3d_image(self.image_height(image), self.image_width(image))
+        else:
+            mask = self.create_full_transparent_3d_image(self.image_height(image), self.image_width(image))
+
+        return (mask,)
 
     def print_debug(self, string):
         if self.is_debug:
@@ -5439,6 +5672,15 @@ class BKCreateEmptyMaskForImage:
         # use the reference image to get batch size and channels
         #create a empty black / transparent image the size of the crop box
         return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def create_full_transparent_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.ones(( 1, 
                             height, 
                             width), 
                             dtype=torch.float32)
@@ -5706,10 +5948,9 @@ class BKLoRATestingNode:
         return {"required": { 
             "model": ("MODEL",),
             "clip": ("CLIP", ),
-            "name": ("STRING", {"multiline": False,"default": "Replace each number in the LoRA's name with '#'. The node will automatically pad the number and replace it in the name. Ex. my_lora_000000300 => my_lora_#########."}),
-            "start": ("INT", {"min":0, "max":999999999, "default": 100,"tooltip": "The starting number of the range of the LoRAs you want to cycle through."}),
-            "end": ("INT", {"min":0, "max":999999999 , "default": 3000,"tooltip": "The ending number of the range of the LoRAs you want to cycle through."}),
-            "step": ("INT", {"min":0, "max":999999999, "default": 100,"tooltip": "This is the steps between each lora's number in their name. Example: my_lora_0100, my_lora_0200, my_lora_0300 => step = 100"}),
+            "lora_relative_path": ("STRING", {
+                "multiline": False,
+            }),
             "seed": ("INT", {"default": 0,"tooltip": "Used to determine which LoRA to use next. Set it to 'increment' to cycle through each LoRA. The node will automatically loop when the number is beyond the range of the LoRAs. No need to try to clamp this number."}),
          }}
 
@@ -5719,29 +5960,23 @@ class BKLoRATestingNode:
     CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
     LABEL = "LoRA Testing Node"  # Default label text
 
-    def get_lora(self, model, clip, name, start, end, step, seed):
+
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+    
+    def filter_strings_by_prefix(string_list, prefix):
+        # Use list comprehension to filter strings that start with the given prefix
+        return [s for s in string_list if s.startswith(prefix)]
+
+    def get_lora(self, model, clip, lora_relative_path,seed):
         result = (model, clip,"","")
 
-        # Find all groups of consecutive '#' characters
-        hash_groups = re.findall(r'#+', name)
         
-        # Check if there is exactly one group of '#'
-        if len(hash_groups) != 1:
-            raise ValueError("The string must contain exactly one group of '#' characters.")
-        
-        # Get the length of the group of '#'
-        hash_count = len(hash_groups[0])
-        
-        # Get LoRA number between start and end in increments of step (Rolls Over)
-        lora_number = get_inc_num_betwen(start, end, step, seed)
-
-        # Replace the '#' group with the specified 'number', padded to the length of the group
-        padded_number = str(lora_number).zfill(hash_count)
-
-        # Replace the first group of '#' with the padded number
-        lora_name = name.replace(hash_groups[0], padded_number, 1)
-
-        print(f"lora_name[{lora_name}]")
         
         # Get list of all loras file paths
         all_loras = folder_paths.get_filename_list("loras")
@@ -6267,9 +6502,12 @@ NODE_CLASS_MAPPINGS = {
     "BK Mask Test": BKMaskTest,
     "BK Bool Not": BKBoolNot,
     "BK Add Mask Box": BKAddMaskBox,
-    "BK Create Empty Mask For Image": BKCreateEmptyMaskForImage,
+    "BK Create Mask For Image": BKCreateMaskForImage,
     "BK Bool Operation": BKBoolOperation,
     "BK Image Size Test": BKImageSizeTest,
+    "BK Get Next Caption File": BKGetNextCaptionFile,
+    "BK Image Sync": BKImageSync,
+    "BK Lora Testing Node": BKLoRATestingNode,
 
 }
 
@@ -6277,3 +6515,20 @@ NODE_CLASS_MAPPINGS = {
 # TODO: Update the "WORKFLOWS" section to allow for sorting, creating of folders, and moving of files
 # TODO: Create crop to mask node
 # TODO: Create Remove background based on mask node
+# TODO: Create node that will load vae and model and clip for wan and such that uses a config file?
+
+
+'''
+LORA TESTING NOTES
+- Should load loras by relative folder path
+- Should return name of LoRA so that an image can be saved with the LoRA name
+- A folder path should be specified, so it will check if the LoRA has already been tested
+- A file should be saved in the folder with the images that records which LoRAs have been tested already
+- Not only should the file save the name of the lora, but somehow ID the prompt and identify if the prompt has been used with the LoRA already
+-- Maybe hash the prompt text and save that alongside the LoRA name in the file
+- A count should be able to be set for how many images for the prompts should be generated
+- The node will only use a new prompt when it identifies that a prompt has been generated for all of the loras and for the qty as well
+- Need to be able to specify a tag for teh name replacement for the lora
+
+
+'''
