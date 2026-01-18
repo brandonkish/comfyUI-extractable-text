@@ -6218,9 +6218,6 @@ class BKLoRATestingNode:
         return [buffer, is_metadata_start_found]
     
     def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
-        
-        metadata = metadata_dict.get("__metadata__", {})
-        print(f"metadata: {metadata}")
         ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
         print(f"metadata: {metadata}")
         return ss_tag_frequency_str
