@@ -1932,7 +1932,7 @@ class BKFileSelector:
 class BKMoveOrCopyFile:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3920,7 +3920,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -5955,7 +5955,7 @@ class BKLoadImage:
 
 class BKLoRATestingNode:
     def __init__(self):
-        self.is_debug = True
+        self.is_debug = False
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
@@ -6033,15 +6033,12 @@ class BKLoRATestingNode:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         else:
             for lora in found_loras:
-                print(f"Found LoRA: [{lora}]")
+                self.print_debug(f"Found LoRA: [{lora}]")
 
         prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
 
         if prompts_df.empty:
             raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
-        
-        print(f"Total rows in TSV file: {len(prompts_df)}")
-        print(prompts_df.head())
 
         # Parse the TSV for any issues with the prompt names, i.e. duplicates, invalid characters, missing columns, etc.
         # Send a warning to the console if any issues are found, but continue processing
@@ -6103,11 +6100,11 @@ class BKLoRATestingNode:
                                     # If everything suceeded, replace the tag in the positive prompt
                                     positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
                                 else:
-                                    print(f"WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                                    print(f"BKLoRATestingNode: WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
                             else:
-                                print(f"WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                                print(f"BKLoRATestingNode: WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
                         else:
-                            print(f"WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
+                            print(f"BKLoRATestingNode: WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
@@ -6270,8 +6267,8 @@ class BKLoRATestingNode:
                 try:
                     # Decode the JSON and return
                     metadata_dict = json.loads(metadata_json_str)
-                    print("Decoded metadata JSON (pretty printed):")
-                    print(json.dumps(metadata_dict, indent=4))
+                    self.print_debug("Decoded metadata JSON (pretty printed):")
+                    self.print_debug(json.dumps(metadata_dict, indent=4))
                     return metadata_dict["__metadata__"]
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     print(f"Error decoding JSON: {e}")
