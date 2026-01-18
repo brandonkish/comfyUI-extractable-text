@@ -5961,7 +5961,7 @@ class BKLoRATestingNode:
         self.output_dir = folder_paths.output_directory
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder):
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
         return float("nan")
 
     @classmethod
@@ -5991,17 +5991,21 @@ class BKLoRATestingNode:
                 "multiline": False,
             }),
             "test_results_folder": ("STRING",),
-            "tag": ("STRING",),  
+              
+         },
+         "optional": {
+            "tag_to_replace": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "lora_tag")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Testing Node"  # Default label text
+    OUTPUT_NODE = True
 
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
 
@@ -6046,6 +6050,7 @@ class BKLoRATestingNode:
         filename = ""
         lora_name = ""
         lora_path = ""
+        lora_tag = ""
 
         # Check to see if the image already exists, if not, process the prompt with the lora
         for lora in found_loras:
@@ -6060,10 +6065,16 @@ class BKLoRATestingNode:
                     self.print_debug(f"{filepath}.png not exists. Generating image...")
                     # Load LoRA using path
                     lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-                    if tag and tag.strip() != "":
-
-   
+                    
+                    # Replace tag in prompt with most common lora tag found in metadata
+                    self.print_debug(f"Extracting metadata from LoRA at path: {lora_path}")
+                    lora_fill_path = folder_paths.get_full_path("loras", lora_path)
+                    self.print_debug(f"Full LoRA path: {lora_fill_path}")
+                    lora_metadata = self.extract_metadata_from_safetensors(lora_fill_path)
+                    lora_tag = self.extract_highest_tag_from_metadata(lora_metadata)
+                    if tag_to_replace and tag_to_replace.strip() != "":
+                        if lora_metadata is not None:
+                            positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_tag)
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
@@ -6074,53 +6085,84 @@ class BKLoRATestingNode:
                     self.print_debug(f"path: {test_results_folder}\\{filename}.png")
        
                     print_debug_bar(self.is_debug)
-                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder)
+                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, lora_tag)
                 self.print_debug(f" {filepath}.png ")
         raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+    
+    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
+        return prompt.replace(tag, lora_tag)
 
-    def extract_metadata(file_path, buffer_size=1024):
+    def extract_highest_tag_from_metadata(self, metadata):
         """
-        Streams the file to read the beginning bytes and extracts the __metadata__ section.
+        Extracts the tag with the highest value from the 'ss_tag_frequency' inside the metadata.
         
         Args:
-            file_path (str): Path to the file.
-            buffer_size (int): The number of bytes to read at a time.
+            metadata (dict): The parsed metadata containing 'ss_tag_frequency'.
         
         Returns:
-            dict: Parsed JSON of the __metadata__ section, or None if not found.
+            str: The tag with the highest frequency.
         """
-        # Open the file in read-only mode
-        with open(file_path, 'r', encoding='utf-8') as file:
-            content_str = ''
-            
-            while True:
-                # Read the next chunk of the file
-                chunk = file.read(buffer_size)
-                if not chunk:
-                    break  # End of file reached
-                
-                content_str += chunk
-                
-                # Try to find the "__metadata__" key in the current chunk of data
-                start_idx = content_str.find('"__metadata__":')
-                if start_idx != -1:
-                    # Find the ending bracket of the JSON object containing __metadata__
-                    end_idx = content_str.find('}', start_idx) + 1
-                    if end_idx != -1:
-                        # Extract the JSON string containing __metadata__
-                        metadata_str = content_str[start_idx:end_idx]
-                        
-                        try:
-                            # Parse the JSON string
-                            metadata_json = json.loads(metadata_str)
-                            return metadata_json["__metadata__"]
-                        except json.JSONDecodeError:
-                            print("Error decoding JSON")
-                            return None
-
-            # If we finish reading the file and can't find __metadata__
-            print("No __metadata__ section found.")
+        ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
+        
+        if not ss_tag_frequency_str:
+            print("Error: No 'ss_tag_frequency' found in metadata.")
             return None
+        
+        # Parse the JSON string from 'ss_tag_frequency'
+        try:
+            tag_frequency = json.loads(ss_tag_frequency_str)
+        except json.JSONDecodeError:
+            print("Error: Unable to decode JSON for 'ss_tag_frequency'.")
+            return None
+        
+        # Find the tag with the highest frequency
+        max_tag = None
+        max_value = -1
+
+        for outer_tag, inner_dict in tag_frequency.items():
+            for inner_tag, value in inner_dict.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+
+    def extract_metadata_from_safetensors(self, file_path):
+        """
+        Extracts the __metadata__ JSON section from a SafeTensors file.
+
+        Args:
+            file_path (str): Path to the SafeTensors file.
+
+        Returns:
+            dict: Parsed __metadata__ JSON data or None if not found.
+        """
+        # Open the SafeTensors file in binary mode
+        with open(file_path, 'rb') as file:
+            content_bytes = file.read()  # Read the entire file as bytes
+
+            # The header or metadata section might be at the start of the file
+            # We search for the __metadata__ section within the binary content
+            start_idx = content_bytes.find(b'"__metadata__":')
+            if start_idx != -1:
+                # Find the end of the metadata JSON (usually ends with a closing brace '}')
+                end_idx = content_bytes.find(b'}', start_idx) + 1
+                if end_idx != -1:
+                    # Extract the metadata bytes
+                    metadata_bytes = content_bytes[start_idx:end_idx]
+                    
+                    try:
+                        # Decode the bytes to a UTF-8 string and then parse it as JSON
+                        metadata_str = metadata_bytes.decode('utf-8')
+                        metadata_json = json.loads(metadata_str)
+                        return metadata_json["__metadata__"]
+                    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                        print(f"Error decoding JSON: {e}")
+                        return None
+            else:
+                print("No __metadata__ section found.")
+                return None
         
     def get_lora_name_wo_extension(self, lora_filepath):
         return os.path.splitext(os.path.basename(lora_filepath))[0]
