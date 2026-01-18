@@ -6846,7 +6846,9 @@ ADVANCED LORA TESTING NOTES - FACE ANALYSIS
 - should have an input for the number of images generated initially that will somehow determine how many images are generated as the process goes along
 - should maybe have a different method for doing the first round to try to speed things up.
 -- Maybe the first round should be a close up on the face?
-
+-- Maybe have different images for comparison with different prompts? Like a image loader, that will select the different image based on the current prompt being generated for comparison?
+--- This might allow for more accurate results if the face is to the side? But I think this is making it too complicated.
+--- Could just run the same test with a different prompt dataset, but then you have two sets of results?
 
 
 '''
