@@ -6219,7 +6219,6 @@ class BKLoRATestingNode:
     
     def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
         ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
-        print(f"metadata: {metadata}")
         return ss_tag_frequency_str
 
     def get_safetensors_metadata_as_json(self, file_path):
