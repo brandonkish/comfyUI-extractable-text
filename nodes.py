@@ -6820,3 +6820,33 @@ LORA TESTING NOTES
 
 
 '''
+
+'''
+ADVANCED LORA TESTING NOTES - FACE ANALYSIS
+- Should have a strategic way of going through the prompts in the tsv i.e. in order, random, etc
+- Have a node that will take in the lora name and use that row to track the image's ratings
+- Should narrow down the loras using statistic percentiles i.e. top 10 percentile or something like this
+- Should have a threshold where once the loras are narrowed down to a select few, that it will go through and generate multiple images
+- Should have a form of detecting the deviation from each generation. So if as it narrows down the loras, it determines that one or more have a lot of fluctuation, it will broden its search again to include some of the other loras, and catch up by generating the images for those loras to catch up
+-- Basically if it detects a lot of variation in the results, it will start adding the next best loras back into the mix to see if they are more stable
+- Should be able to set a minimum number, so basically can set like narrow it down to 3 or something like that.
+- Going to need two nodes. The main node will look at the results of the face analysis numbers, the second will store the numbers after generation for the main node to analyze
+- Maybe break out the analysis parts of the process into a third node, and this third node can be plugged into the the node we already created?
+-- This doesn't make a whole lot of sense, because basically the analysis node would need to know a list of all lora's to analyze, which is basically 75% of what the main node does.
+- going to need to make maybe a seperate class for reading and writing to TSV files?
+- TSV files should not be saved as .txt but have an extension that is specific to the node, to prevent accidental mixup or deletion of the file.
+- The job of the main node is to basically go through and generate at least one of the prompts for all of the loras. Then use the results of that to start narrowing things down.
+- once they are narrowed down to a select few, then we should generate multiples of the same prompts so that we can compare for consistency
+-- maybe increase the generation count for each round? So for the first round it is just one image of the prompts, for the second round it is 2 of the same prompt thrid round...
+-- Maybe instead of doing the same prompt, we do different prompts, but similar for each lora?
+-- Maybe have a few different selectable nodes.
+--- Should make the processing method a pointer to a method, this way it can be swapped out easily
+--- Maybe should make different classes for analysis
+- prompts should be processed in order as they appear in the tsv file to make it simple
+- should have an input for the number of images generated initially that will somehow determine how many images are generated as the process goes along
+- should maybe have a different method for doing the first round to try to speed things up.
+-- Maybe the first round should be a close up on the face?
+
+
+
+'''
