@@ -6055,26 +6055,37 @@ class BKLoRATestingNode:
         # Check to see if the image already exists, if not, process the prompt with the lora
         for lora in found_loras:
             for prompt in valid_prompts:
+
                 lora_path = lora
                 lora_name = self.get_lora_name_wo_extension(lora)
                 positive, negative, prompt_name = prompt
                 filename = f"{prompt_name}_{lora_name}"
-                filepath = os.path.join(test_results_folder, filename)
-                self.print_debug(f"Checking if file exists: {filepath}.png")
-                if not os.path.exists(f"{filepath}.png"):
-                    self.print_debug(f"{filepath}.png not exists. Generating image...")
+                filepath = os.path.join(test_results_folder, filename + ".png")
+
+                self.print_debug(f"Checking if file exists [{filepath}]")
+
+                if self.is_image_not_generated(filepath):
+                    self.print_debug(f"[{filepath}] not found. Generating image...")
                     # Load LoRA using path
                     lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
                     
                     # Replace tag in prompt with most common lora tag found in metadata
-                    self.print_debug(f"Extracting metadata from LoRA at path: {lora_path}")
+                    self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
                     lora_fill_path = folder_paths.get_full_path("loras", lora_path)
                     self.print_debug(f"Full LoRA path: {lora_fill_path}")
-                    lora_metadata = self.extract_metadata_from_safetensors(lora_fill_path)
-                    lora_tag = self.extract_highest_tag_from_metadata(lora_metadata)
-                    if tag_to_replace and tag_to_replace.strip() != "":
-                        if lora_metadata is not None:
-                            positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_tag)
+                    metadata_json = self.extract_metadata_from_safetensors_as_json(lora_fill_path)
+                    
+
+                    if self.is_user_want_to_replace_tag(tag_to_replace):
+                        if metadata_json is not None:
+                            lora_tag = self.extract_highest_tag_from_metadata(metadata_json)
+                            if lora_tag is not None:
+                                self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{lora_tag}]")
+                                positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_tag)
+                            else:
+                                print(f"WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                        else:
+                            print(f"WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
@@ -6089,8 +6100,14 @@ class BKLoRATestingNode:
                 self.print_debug(f" {filepath}.png ")
         raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
     
+    def is_image_not_generated(self, filepath):
+        return not os.path.exists(f"{filepath}")
+
     def replace_tag_in_prompt(self, prompt, tag, lora_tag):
         return prompt.replace(tag, lora_tag)
+    
+    def is_user_want_to_replace_tag(self, tag_to_replace):
+        return tag_to_replace is not None and tag_to_replace.strip() != ""
 
     def extract_highest_tag_from_metadata(self, metadata):
         """
@@ -6127,8 +6144,59 @@ class BKLoRATestingNode:
                     max_tag = inner_tag
         
         return max_tag
+    
+    def is_end_of_metadata_found(self, buffer):
+        if not buffer:
+            return False
+        if len(buffer) < 2:
+            return False
+        is_first_brace_found = False
+        brace_count = 0
 
-    def extract_metadata_from_safetensors(self, file_path):
+        for byte in buffer:
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return True
+
+        return False
+    
+    def parse_metadata_from_buffer_as_str(self, buffer):
+        if not buffer:
+            return None
+        if len(buffer) < 2:
+            return None
+        is_first_brace_found = False
+        brace_count = 0
+
+        for idx, byte in enumerate(buffer):
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return buffer[:idx + 1].decode('utf-8')
+
+        return None
+    
+    def add_outer_braces(self, metadata_str):
+        return f'{{{metadata_str.strip()}}}'
+    
+    def turnicate_buffer_to_start_of_metadata(self, buffer, metadata_start):
+        is_metadata_start_found = False
+        start_idx = buffer.find(metadata_start)
+        if start_idx != -1:
+           is_metadata_start_found = True
+           buffer = buffer[start_idx:]
+        return [buffer, is_metadata_start_found]
+
+    def extract_metadata_from_safetensors_as_json(self, file_path):
         """
         Extracts the __metadata__ JSON section from a SafeTensors file.
 
@@ -6138,32 +6206,42 @@ class BKLoRATestingNode:
         Returns:
             dict: Parsed __metadata__ JSON data or None if not found.
         """
-        # Open the SafeTensors file in binary mode
         with open(file_path, 'rb') as file:
-            content_bytes = file.read()  # Read the entire file as bytes
+            # We're going to accumulate the bytes here
+            buffer = b''
+            metadata_start = b'"__metadata__":'
+            metadata_json_str = ""
 
-            # The header or metadata section might be at the start of the file
-            # We search for the __metadata__ section within the binary content
-            start_idx = content_bytes.find(b'"__metadata__":')
-            if start_idx != -1:
-                # Find the end of the metadata JSON (usually ends with a closing brace '}')
-                end_idx = content_bytes.find(b'}', start_idx) + 1
-                if end_idx != -1:
-                    # Extract the metadata bytes
-                    metadata_bytes = content_bytes[start_idx:end_idx]
-                    
-                    try:
-                        # Decode the bytes to a UTF-8 string and then parse it as JSON
-                        metadata_str = metadata_bytes.decode('utf-8')
-                        metadata_json = json.loads(metadata_str)
-                        return metadata_json["__metadata__"]
-                    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                        print(f"Error decoding JSON: {e}")
-                        return None
-            else:
-                print("No __metadata__ section found.")
-                return None
-        
+            while chunk := file.read(1024):  # Read in chunks
+                buffer += chunk
+
+                buffer, is_metadata_start_found = self.turnicate_buffer_to_start_of_metadata(buffer, metadata_start)
+                self.print_debug(f"Buffer: {buffer}")
+                self.print_debug(f"is_metadata_start_found: {is_metadata_start_found}")
+
+                if is_metadata_start_found:
+                    if parsed_metadata := self.parse_metadata_from_buffer_as_str(buffer):
+                        self.print_debug(f"parsed_metadata: {parsed_metadata}")
+                        metadata_json_str = parsed_metadata
+                        break
+
+            metadata_json_str = self.add_outer_braces(metadata_json_str)
+                
+            if metadata_json_str:
+                try:
+                    # Decode the JSON and return
+                    metadata_json = json.loads(metadata_json_str)
+                    print("Decoded metadata JSON (pretty printed):")
+                    print(json.dumps(metadata_json, indent=4))
+                    return metadata_json["__metadata__"]
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    print(f"Error decoding JSON: {e}")
+                    return None
+
+            print("No __metadata__ section found.")
+            return None
+
+
     def get_lora_name_wo_extension(self, lora_filepath):
         return os.path.splitext(os.path.basename(lora_filepath))[0]
     
