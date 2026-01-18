@@ -6004,11 +6004,16 @@ class BKLoRATestingNode:
     LABEL = "BK LoRA Testing Node"  # Default label text
     OUTPUT_NODE = True
 
+    def set_base_of_relative_paths_to_output_folder(self, path):
+        if not os.path.isabs(path):
+            path = os.path.join(self.output_dir, path)
+        return path
 
     def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
 
+        # Fail early if any of the required inputs are empty
         if not lora_folder:
             raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
         
@@ -6018,8 +6023,7 @@ class BKLoRATestingNode:
         if not test_results_folder:
             raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
 
-        if not os.path.isabs(test_results_folder):
-            test_results_folder = os.path.join(self.output_dir, test_results_folder)
+        test_results_folder = self.set_base_of_relative_paths_to_output_folder(test_results_folder)
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
@@ -6039,6 +6043,8 @@ class BKLoRATestingNode:
         print(f"Total rows in TSV file: {len(prompts_df)}")
         print(prompts_df.head())
 
+        # Parse the TSV for any issues with the prompt names, i.e. duplicates, invalid characters, missing columns, etc.
+        # Send a warning to the console if any issues are found, but continue processing
         valid_prompts = self.get_all_valid_prompts(prompts_df)
 
         if not valid_prompts or len(valid_prompts) <= 0:
@@ -6052,7 +6058,8 @@ class BKLoRATestingNode:
         lora_path = ""
         most_frequent_ss_tag = ""
 
-        # Check to see if the image already exists, if not, process the prompt with the lora
+        # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
+        # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
         for lora in found_loras:
             for prompt in valid_prompts:
 
@@ -6073,20 +6080,27 @@ class BKLoRATestingNode:
                     self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
                     lora_fill_path = folder_paths.get_full_path("loras", lora_path)
                     self.print_debug(f"Full LoRA path: {lora_fill_path}")
-                    
-                    
 
+                    # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
+                    # Wich should be its activation tag
                     if self.is_user_want_to_replace_tag(tag_to_replace):
                         metadata_dict = self.get_safetensors_metadata_as_json(lora_fill_path)
+                        
+                        # Try to read the embedded JSON metadata from the LoRA by reading its bytes directly 
                         if metadata_dict is not None:
                             ss_tag_frequency_str = self.get_ss_tag_frequency_str_from_metadata(metadata_dict)
-
+                            
+                            # Try to extract the most frequent tag from the ss_tag_frequency in the JSON metadata
                             if ss_tag_frequency_str is not None:
                                 ss_tag_frequency_dict = json.loads(ss_tag_frequency_str)
                                 self.print_debug(f"ss_tag_frequency_dict: {ss_tag_frequency_dict}")
+
+                                # Tries to extract the most frequent tag from the ss_tag_frequency dictionary
                                 most_frequent_ss_tag = self.get_most_frequent_ss_tag(ss_tag_frequency_dict)
                                 if most_frequent_ss_tag is not None:
                                     self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{most_frequent_ss_tag}]")
+                                    
+                                    # If everything suceeded, replace the tag in the positive prompt
                                     positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
                                 else:
                                     print(f"WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
