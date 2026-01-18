@@ -6050,7 +6050,7 @@ class BKLoRATestingNode:
         filename = ""
         lora_name = ""
         lora_path = ""
-        lora_tag = ""
+        most_frequent_ss_tag = ""
 
         # Check to see if the image already exists, if not, process the prompt with the lora
         for lora in found_loras:
@@ -6073,17 +6073,25 @@ class BKLoRATestingNode:
                     self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
                     lora_fill_path = folder_paths.get_full_path("loras", lora_path)
                     self.print_debug(f"Full LoRA path: {lora_fill_path}")
-                    metadata_json = self.extract_metadata_from_safetensors_as_json(lora_fill_path)
+                    
                     
 
                     if self.is_user_want_to_replace_tag(tag_to_replace):
-                        if metadata_json is not None:
-                            lora_tag = self.extract_highest_tag_from_metadata(metadata_json)
-                            if lora_tag is not None:
-                                self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{lora_tag}]")
-                                positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_tag)
+                        metadata_dict = self.get_safetensors_metadata_as_json(lora_fill_path)
+                        if metadata_dict is not None:
+                            ss_tag_frequency_str = self.get_ss_tag_frequency_str_from_metadata(metadata_dict)
+
+                            if ss_tag_frequency_str is not None:
+                                ss_tag_frequency_dict = json.loads(ss_tag_frequency_str)
+                                self.print_debug(f"ss_tag_frequency_dict: {ss_tag_frequency_dict}")
+                                most_frequent_ss_tag = self.get_most_frequent_ss_tag(ss_tag_frequency_dict)
+                                if most_frequent_ss_tag is not None:
+                                    self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{most_frequent_ss_tag}]")
+                                    positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
+                                else:
+                                    print(f"WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
                             else:
-                                print(f"WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                                print(f"WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
                         else:
                             print(f"WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
 
@@ -6096,9 +6104,22 @@ class BKLoRATestingNode:
                     self.print_debug(f"path: {test_results_folder}\\{filename}.png")
        
                     print_debug_bar(self.is_debug)
-                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, lora_tag)
+                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
                 self.print_debug(f" {filepath}.png ")
         raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
+    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+        max_tag = None
+        max_value = -1
+
+        for tag, tag_info in ss_tag_frequency_dict.items():
+            for inner_tag, value in tag_info.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
     
     def is_image_not_generated(self, filepath):
         return not os.path.exists(f"{filepath}")
@@ -6195,8 +6216,16 @@ class BKLoRATestingNode:
            is_metadata_start_found = True
            buffer = buffer[start_idx:]
         return [buffer, is_metadata_start_found]
+    
+    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
+        
+        metadata = metadata_dict.get("__metadata__", {})
+        print(f"metadata: {metadata}")
+        ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
+        print(f"metadata: {metadata}")
+        return ss_tag_frequency_str
 
-    def extract_metadata_from_safetensors_as_json(self, file_path):
+    def get_safetensors_metadata_as_json(self, file_path):
         """
         Extracts the __metadata__ JSON section from a SafeTensors file.
 
@@ -6230,10 +6259,10 @@ class BKLoRATestingNode:
             if metadata_json_str:
                 try:
                     # Decode the JSON and return
-                    metadata_json = json.loads(metadata_json_str)
+                    metadata_dict = json.loads(metadata_json_str)
                     print("Decoded metadata JSON (pretty printed):")
-                    print(json.dumps(metadata_json, indent=4))
-                    return metadata_json["__metadata__"]
+                    print(json.dumps(metadata_dict, indent=4))
+                    return metadata_dict["__metadata__"]
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     print(f"Error decoding JSON: {e}")
                     return None
