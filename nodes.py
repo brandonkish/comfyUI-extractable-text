@@ -5991,6 +5991,7 @@ class BKLoRATestingNode:
                 "multiline": False,
             }),
             "test_results_folder": ("STRING",),
+            "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
               
          },
          "optional": {
@@ -6009,7 +6010,7 @@ class BKLoRATestingNode:
             path = os.path.join(self.output_dir, path)
         return path
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
 
@@ -6057,7 +6058,9 @@ class BKLoRATestingNode:
 
         # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
         # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
-        for lora in found_loras:
+        for idx, lora in enumerate(found_loras):
+            if idx % every_nth_lora != 0:
+                continue
             for prompt in valid_prompts:
 
                 lora_path = lora
@@ -6291,7 +6294,7 @@ class BKLoRATestingNode:
             positive = row.get("positive", "").strip()
             self.print_debug(f"  positive='{positive}'")
             # Handle 'negative' column, ensure it defaults to an empty string if missing or None
-            negative = row.get("negative", "").strip() if "negative" in row else ""
+            negative = row.get("negative", "") if "negative" in row else ""
             self.print_debug(f"  negative='{negative}'")
 
             # Step-by-step validation and processing
@@ -6445,72 +6448,7 @@ def parse_int(s: str) -> int:
     except (ValueError, TypeError):
         return -1
     
-class BKMultiLoRATestNode:
-    def __init__(self):
-        self.selected_loras = SelectedLoras()
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "model": ("MODEL",),
-            "clip": ("CLIP", ),
-            "while_loop_idx": ("INT", {"default": 0,"tooltip": "Manually add a +1 to a value in the while loop and use that to increment this value."}),
-            "subfolder": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_prefix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_suffix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "extension": ("STRING", {
-                "multiline": False,
-                "default": ".safetensors"}),
-            "lora_list": ("STRING", {
-                "multiline": True,
-                "default": ""}),
-            
-            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
-            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
-         }}
 
-    RETURN_TYPES = ("MODEL", "CLIP","BOOLEAN", "STRING", "STRING", "STRING", "INT", "INT",)
-    RETURN_NAMES = ("MODEL", "CLIP","has_next", "lora_name", "lora_prefix", "lora_path", "lora_number", "remaining")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "BK Multi LoRA Test Node"  # Default label text
-
-    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, lora_list, while_loop_idx, lora_step, zero_padding):
-        lora_result = (model, clip)
-        
-        total_count = count_lines(lora_list)
-        if total_count > 1:
-            has_next = has_next_line(while_loop_idx, lora_list)
-        else:
-            has_next = False
-        current_lora_string = get_line_by_index(while_loop_idx, lora_list)
-        idx = parse_int(current_lora_string)
-        if idx >= 0:
-            lora_number = get_nearest_step(lora_step, idx)
-            padded_integer_string = f"{lora_number:0{zero_padding}d}"
-            lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
-            lora_name = name_prefix + padded_integer_string + name_suffix
-        
-            lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-            if len(lora_items) > 0:
-                for item in lora_items:
-                    lora_result = item.apply_lora(model, clip)
-        
-        else:
-            lora_name = f"No Lora"
-            lora_path = f"No Lora"
-            name_prefix = f"No Lora"
-            lora_number = -1
-            
-        return(lora_result[0], lora_result[1], has_next, lora_name, name_prefix, lora_path, lora_number, total_count) 
-    
 def to_utf8(input_string):
     """
     Converts a string to UTF-8 encoded bytes.
@@ -6722,6 +6660,558 @@ class LoraItem:
         return self.strength_model == 0 and self.strength_clip == 0
 
 
+##################################################################################################################
+# BK Adv LoRA Testing Node
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKAdvLoRATestingNode:
+    def __init__(self):
+        self.is_debug = False
+        self.selected_loras = SelectedLoras()
+        self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
+        return float("nan")
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "lora_folder": (lora_folder_paths,),
+            "prompts_tsv_filepath": ("STRING", {
+                "multiline": False,
+            }),
+            "test_results_folder": ("STRING",),
+            "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+              
+         },
+         "optional": {
+            "tag_to_replace": ("STRING",),
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "most_frequent_lora_tag")
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK Adv LoRA Testing Node"  # Default label text
+    OUTPUT_NODE = True
+
+    def set_base_of_relative_paths_to_output_folder(self, path):
+        if not os.path.isabs(path):
+            path = os.path.join(self.output_dir, path)
+        return path
+
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+        result = (model, clip,"","")
+
+        # Fail early if any of the required inputs are empty
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
+        
+        if not prompts_tsv_filepath:
+            raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
+        
+        if not test_results_folder:
+            raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
+
+        test_results_folder = self.set_base_of_relative_paths_to_output_folder(test_results_folder)
+
+        prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
+
+        found_loras = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+
+        if found_loras is None or len(found_loras) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        else:
+            for lora in found_loras:
+                self.print_debug(f"Found LoRA: [{lora}]")
+
+        prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
+
+        if prompts_df.empty:
+            raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
+
+        # Parse the TSV for any issues with the prompt names, i.e. duplicates, invalid characters, missing columns, etc.
+        # Send a warning to the console if any issues are found, but continue processing
+        valid_prompts = self.get_all_valid_prompts(prompts_df)
+
+        if not valid_prompts or len(valid_prompts) <= 0:
+            raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
+
+        positive = ""
+        negative = ""
+        prompt_name = ""
+        filename = ""
+        lora_name = ""
+        lora_path = ""
+        most_frequent_ss_tag = ""
+
+        # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
+        # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
+        for idx, lora in enumerate(found_loras):
+            if idx % every_nth_lora != 0:
+                continue
+            for prompt in valid_prompts:
+
+                lora_path = lora
+                lora_name = self.get_lora_name_wo_extension(lora)
+                positive, negative, prompt_name = prompt
+                filename = f"{prompt_name}_{lora_name}"
+                filepath = os.path.join(test_results_folder, filename + ".png")
+
+                self.print_debug(f"Checking if file exists [{filepath}]")
+
+                if self.is_image_not_generated(filepath):
+                    self.print_debug(f"[{filepath}] not found. Generating image...")
+                    # Load LoRA using path
+                    lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+                    
+                    # Replace tag in prompt with most common lora tag found in metadata
+                    self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
+                    lora_fill_path = folder_paths.get_full_path("loras", lora_path)
+                    self.print_debug(f"Full LoRA path: {lora_fill_path}")
+
+                    # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
+                    # Wich should be its activation tag
+                    if self.is_user_want_to_replace_tag(tag_to_replace):
+                        metadata_dict = self.get_safetensors_metadata_as_json(lora_fill_path)
+                        
+                        # Try to read the embedded JSON metadata from the LoRA by reading its bytes directly 
+                        if metadata_dict is not None:
+                            ss_tag_frequency_str = self.get_ss_tag_frequency_str_from_metadata(metadata_dict)
+                            
+                            # Try to extract the most frequent tag from the ss_tag_frequency in the JSON metadata
+                            if ss_tag_frequency_str is not None:
+                                ss_tag_frequency_dict = json.loads(ss_tag_frequency_str)
+                                self.print_debug(f"ss_tag_frequency_dict: {ss_tag_frequency_dict}")
+
+                                # Tries to extract the most frequent tag from the ss_tag_frequency dictionary
+                                most_frequent_ss_tag = self.get_most_frequent_ss_tag(ss_tag_frequency_dict)
+                                if most_frequent_ss_tag is not None:
+                                    self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{most_frequent_ss_tag}]")
+                                    
+                                    # If everything suceeded, replace the tag in the positive prompt
+                                    positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
+                                else:
+                                    print(f"BKLoRATestingNode: WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                            else:
+                                print(f"BKLoRATestingNode: WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
+                        else:
+                            print(f"BKLoRATestingNode: WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
+
+                     # If the LoRA was loaded, apply the lora
+                    if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
+
+                    self.print_debug(f"Returning LoRA Testing Node with LoRA: {lora_name}, Prompt Name: {prompt_name}, Filename: {filename}, Test Results Folder: {test_results_folder}")
+                    self.print_debug(f"path: {test_results_folder}\\{filename}.png")
+       
+                    print_debug_bar(self.is_debug)
+                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
+                self.print_debug(f" {filepath}.png ")
+        raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
+    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+        max_tag = None
+        max_value = -1
+
+        for tag, tag_info in ss_tag_frequency_dict.items():
+            for inner_tag, value in tag_info.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+    
+    def is_image_not_generated(self, filepath):
+        return not os.path.exists(f"{filepath}")
+
+    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
+        return prompt.replace(tag, lora_tag)
+    
+    def is_user_want_to_replace_tag(self, tag_to_replace):
+        return tag_to_replace is not None and tag_to_replace.strip() != ""
+
+    def extract_highest_tag_from_metadata(self, metadata):
+        """
+        Extracts the tag with the highest value from the 'ss_tag_frequency' inside the metadata.
+        
+        Args:
+            metadata (dict): The parsed metadata containing 'ss_tag_frequency'.
+        
+        Returns:
+            str: The tag with the highest frequency.
+        """
+        ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
+        
+        if not ss_tag_frequency_str:
+            print("Error: No 'ss_tag_frequency' found in metadata.")
+            return None
+        
+        # Parse the JSON string from 'ss_tag_frequency'
+        try:
+            tag_frequency = json.loads(ss_tag_frequency_str)
+        except json.JSONDecodeError:
+            print("Error: Unable to decode JSON for 'ss_tag_frequency'.")
+            return None
+        
+        # Find the tag with the highest frequency
+        max_tag = None
+        max_value = -1
+
+        for outer_tag, inner_dict in tag_frequency.items():
+            for inner_tag, value in inner_dict.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+    
+    def is_end_of_metadata_found(self, buffer):
+        if not buffer:
+            return False
+        if len(buffer) < 2:
+            return False
+        is_first_brace_found = False
+        brace_count = 0
+
+        for byte in buffer:
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return True
+
+        return False
+    
+    def parse_metadata_from_buffer_as_str(self, buffer):
+        if not buffer:
+            return None
+        if len(buffer) < 2:
+            return None
+        is_first_brace_found = False
+        brace_count = 0
+
+        for idx, byte in enumerate(buffer):
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return buffer[:idx + 1].decode('utf-8')
+
+        return None
+    
+    def add_outer_braces(self, metadata_str):
+        return f'{{{metadata_str.strip()}}}'
+    
+    def turnicate_buffer_to_start_of_metadata(self, buffer, metadata_start):
+        is_metadata_start_found = False
+        start_idx = buffer.find(metadata_start)
+        if start_idx != -1:
+           is_metadata_start_found = True
+           buffer = buffer[start_idx:]
+        return [buffer, is_metadata_start_found]
+    
+    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
+        ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
+        return ss_tag_frequency_str
+
+    def get_safetensors_metadata_as_json(self, file_path):
+        """
+        Extracts the __metadata__ JSON section from a SafeTensors file.
+
+        Args:
+            file_path (str): Path to the SafeTensors file.
+
+        Returns:
+            dict: Parsed __metadata__ JSON data or None if not found.
+        """
+        with open(file_path, 'rb') as file:
+            # We're going to accumulate the bytes here
+            buffer = b''
+            metadata_start = b'"__metadata__":'
+            metadata_json_str = ""
+
+            while chunk := file.read(1024):  # Read in chunks
+                buffer += chunk
+
+                buffer, is_metadata_start_found = self.turnicate_buffer_to_start_of_metadata(buffer, metadata_start)
+                self.print_debug(f"Buffer: {buffer}")
+                self.print_debug(f"is_metadata_start_found: {is_metadata_start_found}")
+
+                if is_metadata_start_found:
+                    if parsed_metadata := self.parse_metadata_from_buffer_as_str(buffer):
+                        self.print_debug(f"parsed_metadata: {parsed_metadata}")
+                        metadata_json_str = parsed_metadata
+                        break
+
+            metadata_json_str = self.add_outer_braces(metadata_json_str)
+                
+            if metadata_json_str:
+                try:
+                    # Decode the JSON and return
+                    metadata_dict = json.loads(metadata_json_str)
+                    self.print_debug("Decoded metadata JSON (pretty printed):")
+                    self.print_debug(json.dumps(metadata_dict, indent=4))
+                    return metadata_dict["__metadata__"]
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    print(f"Error decoding JSON: {e}")
+                    return None
+
+            print("No __metadata__ section found.")
+            return None
+
+
+    def get_lora_name_wo_extension(self, lora_filepath):
+        return os.path.splitext(os.path.basename(lora_filepath))[0]
+    
+    def get_all_valid_prompts(self, prompts_df):
+        processed_data = []
+        processed_names = set()  # Local set to track names we've already seen
+
+        for index, row in prompts_df.iterrows():
+            name = row.get("name", "").strip()
+            self.print_debug(f"Processing row {index + 1}: name='{name}'")
+            positive = row.get("positive", "").strip()
+            self.print_debug(f"  positive='{positive}'")
+            # Handle 'negative' column, ensure it defaults to an empty string if missing or None
+            negative = row.get("negative", "") if "negative" in row else ""
+            self.print_debug(f"  negative='{negative}'")
+
+            # Step-by-step validation and processing
+            if self.is_valid_name(name, index):
+                if self.is_valid_filename(name, index):
+                    if not self.is_duplicate_name(name, processed_names, index):
+                        if self.is_valid_prompt(positive, index):
+                            processed_data.append(self.process_row( positive, negative, name))
+        
+        return processed_data
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def is_valid_name(self, name, row_index):
+        """Check if the 'name' is non-empty."""
+        if not name:
+            return False
+        return True
+
+    def is_valid_filename(self, name, row_index):
+        """Check if the 'name' contains invalid filename characters."""
+        if re.search(self.invalid_filename_chars, name):
+            print(f"Warning: Invalid filename characters in 'name' '{name}' at row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def is_duplicate_name(self, name, processed_names, row_index):
+        """Check if the 'name' is a duplicate."""
+        if name in processed_names:
+            print(f"Warning: Duplicate 'name' found: '{name}' at row {row_index + 1}. Only the first occurrence will be used.")
+            return True  # Skip the duplicate
+        processed_names.add(name)  # Add the name to the processed set
+        return False
+
+    def is_valid_prompt(self, prompt, row_index):
+        """Check if the 'prompt' is non-empty."""
+        if not prompt:
+            print(f"Warning: Empty 'positive' prompt in row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def process_row(self, name, positive, negative):
+        """Return a list of [name, positive, negative], ensuring negative is always a string."""
+        return [name, positive, negative if negative is not None else ""]
+    
+
+    def read_file_to_dataframe(self, tsv_file_path):
+        # Read the file in binary mode and decode manually
+        try:
+            with open(tsv_file_path, 'rb') as file:
+                # Read the raw bytes
+                raw_data = file.read()
+
+                # Decode using utf-8 and ignore invalid characters
+                decoded_data = raw_data.decode('utf-8', errors='ignore')
+
+                # Use pandas to read the CSV from the decoded string
+                from io import StringIO
+                return pd.read_csv(StringIO(decoded_data), sep='\t')
+
+        except Exception as e:
+            raise Exception(f"Failed to read the TSV file. Reason: {e}")
+
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+
+
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+    
+    def filter_strings_by_prefix(self, string_list, prefix):
+        # Use list comprehension to filter strings that start with the given prefix
+        return [s for s in string_list if s.startswith(prefix)]
+
+
+class TSVWriter:
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        # Check if the file exists; if not, create it with headers
+        if not os.path.exists(filepath):
+            with open(filepath, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file, delimiter='\t')
+                writer.writerow(["lora_name", "prompt_name", "value"])  # Write header
+
+    def append_to_tsv(self, lora_name: str, prompt_name: str, value: float):
+        """Append data to the TSV file."""
+        with open(self.filepath, mode='a', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file, delimiter='\t')
+            writer.writerow([lora_name, prompt_name, value])  # Write the row
+
+##################################################################################################################
+# BK Adv LoRA Results Node
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKAdvLoRAResultsTSVWriter:
+    def __init__(self):
+        self.is_debug = False
+        self.filename = "lora_test_results.ltr"
+
+
+    @classmethod
+    def IS_CHANGED(self, results_folder):
+        return float("nan")
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "results_folder":("STRING",),
+            "lora_name":("STRING",),
+            "prompt_name":("STRING",),
+            "value":("FLOAT",),
+
+         },
+         }
+
+    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("status",)
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK Adv LoRA Results TSV Writer"  # Default label text
+    OUTPUT_NODE = True
+
+    def process(self, results_folder, lora_name, prompt_name, value):
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+
+        value = self.convert_to_basic_float(value)
+        
+        results_filepath = results_folder.strip('\\').strip('/') + "\\" + self.filename
+        self.print_debug(f"results_filepath: [{results_filepath}]")
+        tsv_writer = TSVWriter(results_filepath)
+
+        tsv_writer.append_to_tsv(lora_name, prompt_name, value)
+
+        status = f"{lora_name} - {prompt_name} - {value}"
+        print(f"BKAdvLoRAResultsTSVWriter: {status}")
+        return(status,)
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def convert_to_basic_float(self, np_float):
+        # If np_float is a list, convert each element to a basic float
+        if isinstance(np_float, list):
+            return [float(item) if isinstance(item, np.float64) else float(item) for item in np_float]
+        
+        # If it's a single value, just convert it to a float
+        return float(np_float)
+
+class TSVFaceAnalysisParser:
+    def __init__(self,):
+        self.tsv_reader = TSVReader()
+
+    def parse_data(self):
+        """Parse the dataframe to compute SD and AVG for each set."""
+        df = self.tsv_reader.read_tsv()
+
+        # Group by 'lora_name' and 'prompt_name' and compute SD and AVG for each group
+        results = []
+
+        for (lora_name, prompt_name), group in df.groupby(['lora_name', 'prompt_name']):
+            values = group['value'].values
+            
+            # Normalize values: (value - min) / (max - min) for each set
+            min_value = values.min()
+            max_value = values.max()
+            normalized_values = (values - min_value) / (max_value - min_value)
+            
+            # Calculate mean and standard deviation of the normalized values
+            avg_value = np.mean(normalized_values)
+            stddev_value = np.std(normalized_values)
+            
+            # Append the results in the format: [lora_name, prompt_name, SD, AVG]
+            results.append([lora_name, prompt_name, stddev_value, avg_value])
+
+        return results
+
+class TSVReader:
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+
+    def read_tsv(self):
+        """Reads the TSV file into a pandas dataframe."""
+        df = pd.read_csv(self.filepath, sep='\t', encoding='utf-8')
+        return df
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
@@ -6796,6 +7286,8 @@ NODE_CLASS_MAPPINGS = {
     "BK Image Size Test": BKImageSizeTest,
     "BK Get Next Caption File": BKGetNextCaptionFile,
     "BK Image Sync": BKImageSync,
+    "BK Adv LoRA Testing Node": BKAdvLoRATestingNode,
+    "BK Adv LoRA Results TSV Writer": BKAdvLoRAResultsTSVWriter,
 
 }
 
@@ -6849,6 +7341,7 @@ ADVANCED LORA TESTING NOTES - FACE ANALYSIS
 -- Maybe have different images for comparison with different prompts? Like a image loader, that will select the different image based on the current prompt being generated for comparison?
 --- This might allow for more accurate results if the face is to the side? But I think this is making it too complicated.
 --- Could just run the same test with a different prompt dataset, but then you have two sets of results?
+- Have main node output status showing which lora's it is evaluating and their current rating with their current likeness value
 
 
 '''
