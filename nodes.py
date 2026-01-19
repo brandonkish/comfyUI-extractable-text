@@ -7108,11 +7108,11 @@ class TSVWriter:
                 writer = csv.writer(file, delimiter='\t')
                 writer.writerow(["lora_name", "prompt_name", "value"])  # Write header
 
-    def append_to_tsv(self, lora_name: str, prompt_name: str, value: float):
+    def append_to_tsv(self, lora_name: str, prompt_name: str, round:int, value: float):
         """Append data to the TSV file."""
         with open(self.filepath, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file, delimiter='\t')
-            writer.writerow([lora_name, prompt_name, value])  # Write the row
+            writer.writerow([lora_name, prompt_name, round, value])  # Write the row
 
 ##################################################################################################################
 # BK Adv LoRA Results Node
@@ -7137,6 +7137,7 @@ class BKAdvLoRAResultsTSVWriter:
             "results_folder":("STRING",),
             "lora_name":("STRING",),
             "prompt_name":("STRING",),
+            "round": ("INT",),
             "value":("FLOAT",),
 
          },
@@ -7149,7 +7150,7 @@ class BKAdvLoRAResultsTSVWriter:
     LABEL = "BK Adv LoRA Results TSV Writer"  # Default label text
     OUTPUT_NODE = True
 
-    def process(self, results_folder, lora_name, prompt_name, value):
+    def process(self, results_folder, lora_name, prompt_name, round, value):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
 
         value = self.convert_to_basic_float(value)
@@ -7158,7 +7159,7 @@ class BKAdvLoRAResultsTSVWriter:
         self.print_debug(f"results_filepath: [{results_filepath}]")
         tsv_writer = TSVWriter(results_filepath)
 
-        tsv_writer.append_to_tsv(lora_name, prompt_name, value)
+        tsv_writer.append_to_tsv(lora_name, prompt_name, round, value)
 
         status = f"{lora_name} - {prompt_name} - {value}"
         print(f"BKAdvLoRAResultsTSVWriter: {status}")
