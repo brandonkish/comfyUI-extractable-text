@@ -6145,15 +6145,6 @@ class BKLoRATestingNode:
         return tag_to_replace is not None and tag_to_replace.strip() != ""
 
     def extract_highest_tag_from_metadata(self, metadata):
-        """
-        Extracts the tag with the highest value from the 'ss_tag_frequency' inside the metadata.
-        
-        Args:
-            metadata (dict): The parsed metadata containing 'ss_tag_frequency'.
-        
-        Returns:
-            str: The tag with the highest frequency.
-        """
         ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
         
         if not ss_tag_frequency_str:
@@ -6236,15 +6227,6 @@ class BKLoRATestingNode:
         return ss_tag_frequency_str
 
     def get_safetensors_metadata_as_json(self, file_path):
-        """
-        Extracts the __metadata__ JSON section from a SafeTensors file.
-
-        Args:
-            file_path (str): Path to the SafeTensors file.
-
-        Returns:
-            dict: Parsed __metadata__ JSON data or None if not found.
-        """
         with open(file_path, 'rb') as file:
             # We're going to accumulate the bytes here
             buffer = b''
@@ -6311,20 +6293,17 @@ class BKLoRATestingNode:
             print (f"{string}")
 
     def is_valid_name(self, name, row_index):
-        """Check if the 'name' is non-empty."""
         if not name:
             return False
         return True
 
     def is_valid_filename(self, name, row_index):
-        """Check if the 'name' contains invalid filename characters."""
         if re.search(self.invalid_filename_chars, name):
             print(f"Warning: Invalid filename characters in 'name' '{name}' at row {row_index + 1}. Skipping this row.")
             return False
         return True
 
     def is_duplicate_name(self, name, processed_names, row_index):
-        """Check if the 'name' is a duplicate."""
         if name in processed_names:
             print(f"Warning: Duplicate 'name' found: '{name}' at row {row_index + 1}. Only the first occurrence will be used.")
             return True  # Skip the duplicate
@@ -6332,14 +6311,12 @@ class BKLoRATestingNode:
         return False
 
     def is_valid_prompt(self, prompt, row_index):
-        """Check if the 'prompt' is non-empty."""
         if not prompt:
             print(f"Warning: Empty 'positive' prompt in row {row_index + 1}. Skipping this row.")
             return False
         return True
 
     def process_row(self, name, positive, negative):
-        """Return a list of [name, positive, negative], ensuring negative is always a string."""
         return [name, positive, negative if negative is not None else ""]
     
 
@@ -6386,16 +6363,6 @@ class BKLoRATestingNode:
         return [s for s in string_list if s.startswith(prefix)]
 
 def get_line_by_index(index: int, text: str) -> str:
-    """
-    Returns the line at the specified index from a multiline string.
-    
-    Args:
-        index (int): The zero-based index of the line to return.
-        text (str): The multiline string input.
-        
-    Returns:
-        str: The line at the given index, or an error message if the index is out of range.
-    """
     lines = text.splitlines()
     
     if 0 <= index < len(lines):
@@ -6404,45 +6371,13 @@ def get_line_by_index(index: int, text: str) -> str:
         return f"Index {index} out of range. Text has {len(lines)} lines."
     
 def count_lines(text: str) -> int:
-    """
-    Returns the number of lines in a multiline string.
-    
-    Args:
-        text (str): The multiline string input.
-        
-    Returns:
-        int: The total number of lines.
-    """
     return len(text.splitlines())
 
 def has_next_line(index: int, text: str) -> bool:
-    """
-    Checks if there is a next line after the given index in a multiline string.
-
-    Args:
-        index (int): The current line index (0-based).
-        text (str): The multiline string input.
-
-    Returns:
-        bool: True if there is a next line, False otherwise.
-    """
     lines = text.splitlines()
     return (index + 1) < len(lines)
 
 def parse_int(s: str) -> int:
-    """
-    Attempts to parse a string into an integer.
-
-    Args:
-        s (str): The input string.
-
-    Returns:
-        int: The parsed integer.
-
-    Raises:
-        ValueError: If the string cannot be converted to an integer.
-    """
-
     try:
         return int(s.strip())
     except (ValueError, TypeError):
@@ -6450,15 +6385,6 @@ def parse_int(s: str) -> int:
     
 
 def to_utf8(input_string):
-    """
-    Converts a string to UTF-8 encoded bytes.
-    
-    Parameters:
-        input_string (str): The string to encode.
-    
-    Returns:
-        bytes: UTF-8 encoded version of the input string.
-    """
     utf8_bytes = input_string.encode('utf-8')
     return utf8_bytes.hex()
 
@@ -6672,6 +6598,7 @@ class BKAdvLoRATestingNode:
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
+        self.test_results_filename = "lora_test_results.ltr"
 
     @classmethod
     def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
@@ -6726,6 +6653,13 @@ class BKAdvLoRATestingNode:
     def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
+        positive = ""
+        negative = ""
+        prompt_name = ""
+        filename = ""
+        lora_name = ""
+        lora_path = ""
+        most_frequent_ss_tag = ""
 
         # Fail early if any of the required inputs are empty
         if not lora_folder:
@@ -6749,91 +6683,65 @@ class BKAdvLoRATestingNode:
             for lora in found_loras:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
-        prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
+        prompts_dataframe = TSVReader(prompts_tsv_filepath).to_dataframe()
 
-        if prompts_df.empty:
+        if prompts_dataframe.empty:
             raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
+        
+        prompts = PromptParser(prompts_dataframe).parse()
 
-        # Parse the TSV for any issues with the prompt names, i.e. duplicates, invalid characters, missing columns, etc.
-        # Send a warning to the console if any issues are found, but continue processing
-        valid_prompts = self.get_all_valid_prompts(prompts_df)
-
-        if not valid_prompts or len(valid_prompts) <= 0:
+        if not prompts or len(prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
-        positive = ""
-        negative = ""
-        prompt_name = ""
-        filename = ""
-        lora_name = ""
-        lora_path = ""
-        most_frequent_ss_tag = ""
+        test_results_file_path = self.get_test_results_filepath(test_results_folder)
+        test_results_dataframe = TSVReader(test_results_file_path)
+        test_results = TSVLoRATestResultsParser(test_results_dataframe).parse()
+
+        
+
+        self.do_first_pass()
+
+        '''
 
         # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
         # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
         for idx, lora in enumerate(found_loras):
             if idx % every_nth_lora != 0:
                 continue
-            for prompt in valid_prompts:
+            for prompt in prompts:
+                positive, negative, name, idx = prompt
 
                 lora_path = lora
                 lora_name = self.get_lora_name_wo_extension(lora)
-                positive, negative, prompt_name = prompt
                 filename = f"{prompt_name}_{lora_name}"
                 filepath = os.path.join(test_results_folder, filename + ".png")
 
                 self.print_debug(f"Checking if file exists [{filepath}]")
 
                 if self.is_image_not_generated(filepath):
-                    self.print_debug(f"[{filepath}] not found. Generating image...")
                     # Load LoRA using path
                     lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
                     
                     # Replace tag in prompt with most common lora tag found in metadata
-                    self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
-                    lora_fill_path = folder_paths.get_full_path("loras", lora_path)
-                    self.print_debug(f"Full LoRA path: {lora_fill_path}")
+                    lora_full_path = folder_paths.get_full_path("loras", lora_path)
 
                     # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
                     # Wich should be its activation tag
                     if self.is_user_want_to_replace_tag(tag_to_replace):
-                        metadata_dict = self.get_safetensors_metadata_as_json(lora_fill_path)
-                        
-                        # Try to read the embedded JSON metadata from the LoRA by reading its bytes directly 
-                        if metadata_dict is not None:
-                            ss_tag_frequency_str = self.get_ss_tag_frequency_str_from_metadata(metadata_dict)
-                            
-                            # Try to extract the most frequent tag from the ss_tag_frequency in the JSON metadata
-                            if ss_tag_frequency_str is not None:
-                                ss_tag_frequency_dict = json.loads(ss_tag_frequency_str)
-                                self.print_debug(f"ss_tag_frequency_dict: {ss_tag_frequency_dict}")
-
-                                # Tries to extract the most frequent tag from the ss_tag_frequency dictionary
-                                most_frequent_ss_tag = self.get_most_frequent_ss_tag(ss_tag_frequency_dict)
-                                if most_frequent_ss_tag is not None:
-                                    self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{most_frequent_ss_tag}]")
-                                    
-                                    # If everything suceeded, replace the tag in the positive prompt
-                                    positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
-                                else:
-                                    print(f"BKLoRATestingNode: WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
-                            else:
-                                print(f"BKLoRATestingNode: WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
-                        else:
-                            print(f"BKLoRATestingNode: WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
+                        lora_metadata_parser = LoRAMetadataParser(lora_full_path)
+                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_metadata_parser.get_most_frequent_ss_tag())
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
                         for item in lora_items:
                             result = item.apply_lora(result[0], result[1])
+'''
+        print_debug_bar(self.is_debug)
+        return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
+        #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
 
-                    self.print_debug(f"Returning LoRA Testing Node with LoRA: {lora_name}, Prompt Name: {prompt_name}, Filename: {filename}, Test Results Folder: {test_results_folder}")
-                    self.print_debug(f"path: {test_results_folder}\\{filename}.png")
-       
-                    print_debug_bar(self.is_debug)
-                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
-                self.print_debug(f" {filepath}.png ")
-        raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+    def get_test_results_filepath(self, test_results_folder):
+        return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_results_filename}"
 
     def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
         max_tag = None
@@ -6943,135 +6851,13 @@ class BKAdvLoRATestingNode:
            is_metadata_start_found = True
            buffer = buffer[start_idx:]
         return [buffer, is_metadata_start_found]
-    
-    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
-        ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
-        return ss_tag_frequency_str
-
-    def get_safetensors_metadata_as_json(self, file_path):
-        """
-        Extracts the __metadata__ JSON section from a SafeTensors file.
-
-        Args:
-            file_path (str): Path to the SafeTensors file.
-
-        Returns:
-            dict: Parsed __metadata__ JSON data or None if not found.
-        """
-        with open(file_path, 'rb') as file:
-            # We're going to accumulate the bytes here
-            buffer = b''
-            metadata_start = b'"__metadata__":'
-            metadata_json_str = ""
-
-            while chunk := file.read(1024):  # Read in chunks
-                buffer += chunk
-
-                buffer, is_metadata_start_found = self.turnicate_buffer_to_start_of_metadata(buffer, metadata_start)
-                self.print_debug(f"Buffer: {buffer}")
-                self.print_debug(f"is_metadata_start_found: {is_metadata_start_found}")
-
-                if is_metadata_start_found:
-                    if parsed_metadata := self.parse_metadata_from_buffer_as_str(buffer):
-                        self.print_debug(f"parsed_metadata: {parsed_metadata}")
-                        metadata_json_str = parsed_metadata
-                        break
-
-            metadata_json_str = self.add_outer_braces(metadata_json_str)
-                
-            if metadata_json_str:
-                try:
-                    # Decode the JSON and return
-                    metadata_dict = json.loads(metadata_json_str)
-                    self.print_debug("Decoded metadata JSON (pretty printed):")
-                    self.print_debug(json.dumps(metadata_dict, indent=4))
-                    return metadata_dict["__metadata__"]
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    print(f"Error decoding JSON: {e}")
-                    return None
-
-            print("No __metadata__ section found.")
-            return None
-
 
     def get_lora_name_wo_extension(self, lora_filepath):
         return os.path.splitext(os.path.basename(lora_filepath))[0]
-    
-    def get_all_valid_prompts(self, prompts_df):
-        processed_data = []
-        processed_names = set()  # Local set to track names we've already seen
 
-        for index, row in prompts_df.iterrows():
-            name = row.get("name", "").strip()
-            self.print_debug(f"Processing row {index + 1}: name='{name}'")
-            positive = row.get("positive", "").strip()
-            self.print_debug(f"  positive='{positive}'")
-            # Handle 'negative' column, ensure it defaults to an empty string if missing or None
-            negative = row.get("negative", "") if "negative" in row else ""
-            self.print_debug(f"  negative='{negative}'")
-
-            # Step-by-step validation and processing
-            if self.is_valid_name(name, index):
-                if self.is_valid_filename(name, index):
-                    if not self.is_duplicate_name(name, processed_names, index):
-                        if self.is_valid_prompt(positive, index):
-                            processed_data.append(self.process_row( positive, negative, name))
-        
-        return processed_data
-    
     def print_debug(self, string):
         if self.is_debug:
             print (f"{string}")
-
-    def is_valid_name(self, name, row_index):
-        """Check if the 'name' is non-empty."""
-        if not name:
-            return False
-        return True
-
-    def is_valid_filename(self, name, row_index):
-        """Check if the 'name' contains invalid filename characters."""
-        if re.search(self.invalid_filename_chars, name):
-            print(f"Warning: Invalid filename characters in 'name' '{name}' at row {row_index + 1}. Skipping this row.")
-            return False
-        return True
-
-    def is_duplicate_name(self, name, processed_names, row_index):
-        """Check if the 'name' is a duplicate."""
-        if name in processed_names:
-            print(f"Warning: Duplicate 'name' found: '{name}' at row {row_index + 1}. Only the first occurrence will be used.")
-            return True  # Skip the duplicate
-        processed_names.add(name)  # Add the name to the processed set
-        return False
-
-    def is_valid_prompt(self, prompt, row_index):
-        """Check if the 'prompt' is non-empty."""
-        if not prompt:
-            print(f"Warning: Empty 'positive' prompt in row {row_index + 1}. Skipping this row.")
-            return False
-        return True
-
-    def process_row(self, name, positive, negative):
-        """Return a list of [name, positive, negative], ensuring negative is always a string."""
-        return [name, positive, negative if negative is not None else ""]
-    
-
-    def read_file_to_dataframe(self, tsv_file_path):
-        # Read the file in binary mode and decode manually
-        try:
-            with open(tsv_file_path, 'rb') as file:
-                # Read the raw bytes
-                raw_data = file.read()
-
-                # Decode using utf-8 and ignore invalid characters
-                decoded_data = raw_data.decode('utf-8', errors='ignore')
-
-                # Use pandas to read the CSV from the decoded string
-                from io import StringIO
-                return pd.read_csv(StringIO(decoded_data), sep='\t')
-
-        except Exception as e:
-            raise Exception(f"Failed to read the TSV file. Reason: {e}")
 
     def get_all_lora_filepaths_in_folder(self, folder, file_paths):
         # List to hold file paths that start with the given prefix
@@ -7177,13 +6963,13 @@ class BKAdvLoRAResultsTSVWriter:
         # If it's a single value, just convert it to a float
         return float(np_float)
 
-class TSVFaceAnalysisParser:
+class TSVLoRATestResultsParser:
     def __init__(self,):
         self.tsv_reader = TSVReader()
 
-    def parse_data(self):
+    def parse(self):
         """Parse the dataframe to compute SD and AVG for each set."""
-        df = self.tsv_reader.read_tsv()
+        df = self.tsv_reader.to_dataframe()
 
         # Group by 'lora_name' and 'prompt_name' and compute SD and AVG for each group
         results = []
@@ -7205,14 +6991,160 @@ class TSVFaceAnalysisParser:
 
         return results
 
+import pandas as pd
+import re
+
+class PromptParser:
+    def __init__(self, dataframe: pd.DataFrame):
+        self.dataframe = dataframe
+
+    def sanitize_name(self, name: str, row_idx: int) -> str:
+        """Sanitize the 'name' field by removing invalid filename characters."""
+        invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'  # Invalid characters for filenames
+        if re.search(invalid_chars, name):
+            sanitized_name = re.sub(invalid_chars, '_', name)
+            print(f"Row {row_idx}: Invalid characters in 'name'. Sanitized name: '{sanitized_name}'")
+            return sanitized_name
+        return name
+
+    def parse(self):
+        """Parse the DataFrame and return a list of valid objects in the specified format."""
+        if 'positive' not in self.dataframe.columns:
+            raise ValueError("Missing 'positive' column. 'positive' column is required.")
+        if 'name' not in self.dataframe.columns:
+            raise ValueError("Missing 'name' column. 'name' column is required.")
+
+        parsed_data = []
+
+        for idx, row in self.dataframe.iterrows():
+            # Check if the 'positive' and 'name' columns are strings
+            positive = row.get('positive', '')
+            name = row.get('name', '')
+            negative = row.get('negative', '')
+
+            # Ensure 'positive' is a string
+            if not isinstance(positive, str):
+                continue
+
+            # Ensure 'name' is a string and not None or empty
+            if not isinstance(name, str) or not name:
+                print(f"Row {idx}: 'name' column is invalid (None or empty string). This row will be ignored.")
+                continue
+
+            # Sanitize the 'name' to remove invalid filename characters
+            sanitized_name = self.sanitize_name(name, idx)
+
+            # Ensure 'negative' column is a string or empty string if invalid
+            if not isinstance(negative, str):
+                negative = ''
+
+            # Add the valid data to the list
+            parsed_data.append([positive, negative, sanitized_name, idx])
+
+        return parsed_data
+
+
+import pandas as pd
+import re
+
 class TSVReader:
     def __init__(self, filepath: str):
         self.filepath = filepath
+        self.is_debug = False
 
-    def read_tsv(self):
+    def to_dataframe(self):
         """Reads the TSV file into a pandas dataframe."""
-        df = pd.read_csv(self.filepath, sep='\t', encoding='utf-8')
+        with open(self.filepath, 'rb') as file:
+            # Read the file in binary mode
+            binary_content = file.read()
+            
+            # Decode the content to UTF-8, ignoring invalid characters
+            text_content = binary_content.decode('utf-8', errors='ignore')
+            
+        # Use pandas to read the decoded text as a TSV string
+        from io import StringIO
+        tsv_data = StringIO(text_content)
+        
+        # Return the parsed DataFrame
+        df = pd.read_csv(tsv_data, sep='\t')
         return df
+
+
+import json
+
+class LoRAMetadataParser:
+    def __init__(self, lora_full_path: str):
+        self.lora_full_path = lora_full_path
+        self.is_debug = False
+
+    def get_safetensors_metadata_as_json(self):
+        with open(self.lora_full_path, 'rb') as file:
+            buffer = b''
+            metadata_start = b'"__metadata__":'
+            metadata_json_str = ""
+
+            while chunk := file.read(1024):  # Read in chunks
+                buffer += chunk
+
+                buffer, is_metadata_start_found = self._truncate_buffer_to_start_of_metadata(buffer, metadata_start)
+
+                if is_metadata_start_found:
+                    if parsed_metadata := self._parse_metadata_from_buffer_as_str(buffer):
+                        metadata_json_str = parsed_metadata
+                        break
+
+            metadata_json_str = self._add_outer_braces(metadata_json_str)
+
+            if metadata_json_str:
+                try:
+                    metadata_dict = json.loads(metadata_json_str)
+                    return metadata_dict.get("__metadata__", None)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    print(f"Error decoding JSON: {e}")
+                    return None
+
+            print("No __metadata__ section found.")
+            return None
+
+    def _truncate_buffer_to_start_of_metadata(self, buffer, metadata_start):
+        if metadata_start in buffer:
+            start_idx = buffer.find(metadata_start)
+            return buffer[start_idx:], True
+        return buffer, False
+
+    def _parse_metadata_from_buffer_as_str(self, buffer):
+        try:
+            json_str = buffer.decode('utf-8')
+            start_idx = json_str.find('"__metadata__":')
+            end_idx = json_str.find('}', start_idx)
+            return json_str[start_idx:end_idx+1]
+        except Exception as e:
+            print(f"Error parsing metadata: {e}")
+            return ""
+
+    def _add_outer_braces(self, json_str):
+        return f"{{ {json_str} }}" if json_str else ""
+
+    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
+        return metadata_dict.get("ss_tag_frequency", None)
+
+    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+        max_tag = None
+        max_value = -1
+
+        for tag, tag_info in ss_tag_frequency_dict.items():
+            for inner_tag, value in tag_info.items():
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+
+        return max_tag
+
+    def print_debug(self, message):
+        if self.is_debug:
+            print(message)
+
+
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
@@ -7343,6 +7275,9 @@ ADVANCED LORA TESTING NOTES - FACE ANALYSIS
 --- This might allow for more accurate results if the face is to the side? But I think this is making it too complicated.
 --- Could just run the same test with a different prompt dataset, but then you have two sets of results?
 - Have main node output status showing which lora's it is evaluating and their current rating with their current likeness value
+- It should do a first pass where it makes one image for every lora. This is usually a headshot.
+-- for every subsequent pass, if the avarage face analysis falls below the value of one of the first passes, then we go back and generate all the images up to this point for the one it fell below, and re-evaluate. we take the one that has the lowest score of the two. if that one falls below the avarage score of one of the original images, we then process that one and kick out the others in the final results
+---To do this we always include all all loras when taking the percentile of the set. And we always check if all images in our percentile set has all images. If not we generate them and catch them up. BUt we re-evaluate and do this until our percentiale set has all images and has the lowest avaragers of all loras.
 
 
 '''
