@@ -6675,12 +6675,12 @@ class BKAdvLoRATestingNode:
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
-        found_loras = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+        found_lora_relative_filepaths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        if found_loras is None or len(found_loras) <= 0:
+        if found_lora_relative_filepaths is None or len(found_lora_relative_filepaths) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         else:
-            for lora in found_loras:
+            for lora in found_lora_relative_filepaths:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
         prompts_dataframe = TSVReader(prompts_tsv_filepath).to_dataframe()
@@ -6698,8 +6698,8 @@ class BKAdvLoRATestingNode:
         test_results = TSVLoRATestResultsParser(test_results_dataframe).parse()
 
         
-
-        self.do_first_pass()
+        if not self.is_first_round_complete(test_results, found_lora_relative_filepaths):
+            self.do_first_round(prompts[0], test_results, found_lora_relative_filepaths)
 
         '''
 
@@ -6739,6 +6739,23 @@ class BKAdvLoRATestingNode:
         print_debug_bar(self.is_debug)
         return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
         #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
+    def get_lora_name_from_relative_path(self, lora_relative_path):
+        return os.path.splitext(os.path.basename(lora_relative_path))[0]
+
+    def is_first_round_complete(self, test_results, found_lora_relative_paths):
+        for found_lora in found_lora_relative_paths:
+            lora_name = self.get_lora_name_from_relative_path(found_lora)
+            if not self.is_lora_tested_in_round(test_results, lora_name, 1):
+                return False
+        return True
+    
+    def is_lora_tested_in_round(self, test_results, lora_name_search, round_search):
+        if any(lora_name == lora_name_search and round == round_search for lora_name, prompt_name, round, value in test_results):
+            return True
+        else:
+            return False
+
 
     def get_test_results_filepath(self, test_results_folder):
         return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_results_filename}"
