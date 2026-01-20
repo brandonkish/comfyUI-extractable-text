@@ -6647,10 +6647,12 @@ class BKLoraAutoSwitcher:
                         for item in lora_items:
                             result = item.apply_lora(result[0], result[1])
 
+        lora_name = self.get_lora_name_from_relative_path(loras_rel_paths_in_folder[idx])
+
         print_debug_bar(self.is_debug)
         return(result[0], result[1], lora_name, idx)
     
-
+    
     
     def get_all_lora_filepaths_in_folder(self, folder, file_paths):
         # List to hold file paths that start with the given prefix
@@ -6663,6 +6665,9 @@ class BKLoraAutoSwitcher:
                 matching_paths.append(file_path)
         
         return matching_paths    
+    
+    def get_lora_name_from_relative_path(self, lora_rel_path):
+        return os.path.splitext(os.path.basename(lora_rel_path))[0]
     
     def convert_seed_to_idx(self, length, seed):
         # Use modulus to ensure the seed is within the bounds of the prompt_column length
@@ -6760,12 +6765,12 @@ class BKAdvLoRATestingNode:
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
-        rounds_loras_rel_paths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+        all_rel_lora_paths_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        if rounds_loras_rel_paths is None or len(rounds_loras_rel_paths) <= 0:
+        if all_rel_lora_paths_in_folder is None or len(all_rel_lora_paths_in_folder) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         else:
-            for lora in rounds_loras_rel_paths:
+            for lora in all_rel_lora_paths_in_folder:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
         prompts_dataframe = TSVReader(prompts_tsv_filepath).to_dataframe()
@@ -6782,14 +6787,25 @@ class BKAdvLoRATestingNode:
         test_results_dataframe = TSVReader(test_results_file_path)
         test_results = TSVLoRATestResultsParser(test_results_dataframe).parse()
 
+
+
+
+
         #TODO: Create code that will filter the loras based on their standard deviation and avg values
         #TODO: The round number should specify how many are returned
         #TODO: set a mimimum number of loras in inputs and keep processing images until all promps are completed
         #TODO: maybe grab next 3 lowest and genrate to compare avarages if one in test set raises above lowest in previous images instead of grabbing next lowest 1?
 
+
+        for prompt, idx in prompts:
+            if idx == 0:
+                if self.is_all_loras_have_start_rating():
+                    continue
+                else
+
         
-        if not self.is_round_complete(test_results, rounds_loras_rel_paths):
-            self.do_round(prompts[0], test_results, rounds_loras_rel_paths)
+        if not self.is_round_complete(test_results, all_rel_lora_paths_in_folder):
+            self.do_round(prompts[0], test_results, all_rel_lora_paths_in_folder)
 
         '''
 
@@ -6829,6 +6845,24 @@ class BKAdvLoRATestingNode:
         print_debug_bar(self.is_debug)
         return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
         #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
+    def is_all_loras_have_start_rating(self, all_lora_rel_paths, test_results):
+        # Extract the lora names from the test results
+        lora_names_in_test_results = [result[0] for result in test_results]
+        
+        # Iterate through the list of all_lora_rel_paths and check if each filename (without extension)
+        # is present in the test_results' lora names
+        for lora_path in all_lora_rel_paths:
+            # Extract the filename without extension
+            lora_filename = os.path.splitext(os.path.basename(lora_path))[0]
+            
+            # Check if the lora_filename is in the lora_names_in_test_results
+            if lora_filename not in lora_names_in_test_results:
+                return False
+        
+        # If all lora files are found, return True
+        return True
+
 
     def get_lora_name_from_relative_path(self, lora_rel_path):
         return os.path.splitext(os.path.basename(lora_rel_path))[0]
@@ -7104,8 +7138,37 @@ class BKAdvLoRAResultsTSVWriter:
         return float(np_float)
 
 class TSVLoRATestResultsParser:
-    def __init__(self,):
+    def __init__(self, similartiy_weight):
         self.tsv_reader = TSVReader()
+        self.similarity_weight = similartiy_weight
+
+
+    def get_top_loras(self, lora_count):
+        # Call the parse method to get all loras
+        all_calc_loras = self.parse()
+        
+        # Initialize an empty list to store loras with their ratings
+        lora_ratings = []
+        
+        # Calculate ratings for each lora
+        for lora in all_calc_loras:
+            lora_name, prompt_name, stddev_value, avg_value = lora
+            # Calculate the rating using the given formula
+            rating = (self.similarity_weight * avg_value) + ((1 - self.similarity_weight) * stddev_value)
+            # Append the lora along with its rating
+            lora_ratings.append((lora, rating))
+        
+        # Sort loras by their rating in ascending order (smallest rating first)
+        lora_ratings.sort(key=lambda x: x[1])
+        
+        # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
+        top_loras = [
+            [lora_name, prompt_name, stddev_value, avg_value, rating] 
+            for (lora_name, prompt_name, stddev_value, avg_value), rating in lora_ratings[:lora_count]
+        ]
+        
+        return top_loras
+
 
     def parse(self):
         """Parse the dataframe to compute SD and AVG for each set."""
