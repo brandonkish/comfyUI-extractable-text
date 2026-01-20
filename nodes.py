@@ -6570,6 +6570,108 @@ class LoraItem:
 
 
 ##################################################################################################################
+# BK Lora Switcher
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKLoraAutoSwitcher:
+    def __init__(self):
+        self.is_debug = False
+        self.selected_loras = SelectedLoras()
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder,  seed, every_nth_lora):
+        return float("nan")
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "lora_folder": (lora_folder_paths,),
+            "seed": ("INT", {"min" : 0} ),
+            "every_nth_lora": ("INT", {"default": 1, "min": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+              
+         },
+         "optional": {
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "most_frequent_lora_tag")
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK Lora Auto Switcher"  # Default label text
+    OUTPUT_NODE = True
+
+
+    def process(self, model, clip, lora_folder,  seed, every_nth_lora):
+        print_debug_header(self.is_debug, "BK LORA SWITCHER")
+        result = (model, clip,"","")
+        lora_name = ""
+
+        # Fail early if any of the required inputs are empty
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
+
+
+        loras_rel_paths_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+
+        if loras_rel_paths_in_folder is None or len(loras_rel_paths_in_folder) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+
+        seed = seed + (every_nth_lora - 1)
+
+        idx = self.convert_seed_to_idx(len(loras_rel_paths_in_folder), seed)
+
+        lora_items = self.selected_loras.updated_lora_items_with_text(loras_rel_paths_in_folder[idx])
+
+        if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
+
+        print_debug_bar(self.is_debug)
+        return(result[0], result[1], lora_name, idx)
+    
+
+    
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+    
+    def convert_seed_to_idx(self, length, seed):
+        # Use modulus to ensure the seed is within the bounds of the prompt_column length
+        if seed == 0:
+            return 0
+
+        return seed % length  # Adjust seed to be within valid range for the column
+
+##################################################################################################################
 # BK Adv LoRA Testing Node
 ##################################################################################################################
 
@@ -7362,6 +7464,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Image Sync": BKImageSync,
     "BK Adv LoRA Testing Node": BKAdvLoRATestingNode,
     "BK Adv LoRA Results TSV Writer": BKAdvLoRAResultsTSVWriter,
+    "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
 
 }
 
