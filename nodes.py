@@ -6614,11 +6614,11 @@ class BKLoraAutoSwitcher:
          "optional": {
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "most_frequent_lora_tag")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "INT")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "idx")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
-    LABEL = "BK Lora Auto Switcher"  # Default label text
+    LABEL = "BK LoRA Auto Switcher"  # Default label text
     OUTPUT_NODE = True
 
 
