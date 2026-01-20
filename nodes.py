@@ -5955,13 +5955,13 @@ class BKLoadImage:
 
 class BKLoRATestingNode:
     def __init__(self):
-        self.is_debug = False
+        self.is_debug = True
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
         return float("nan")
 
     @classmethod
