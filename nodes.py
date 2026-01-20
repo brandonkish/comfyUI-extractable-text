@@ -6675,12 +6675,12 @@ class BKAdvLoRATestingNode:
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
-        found_lora_relative_filepaths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+        rounds_loras_rel_paths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        if found_lora_relative_filepaths is None or len(found_lora_relative_filepaths) <= 0:
+        if rounds_loras_rel_paths is None or len(rounds_loras_rel_paths) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         else:
-            for lora in found_lora_relative_filepaths:
+            for lora in rounds_loras_rel_paths:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
         prompts_dataframe = TSVReader(prompts_tsv_filepath).to_dataframe()
@@ -6697,9 +6697,14 @@ class BKAdvLoRATestingNode:
         test_results_dataframe = TSVReader(test_results_file_path)
         test_results = TSVLoRATestResultsParser(test_results_dataframe).parse()
 
+        #TODO: Create code that will filter the loras based on their standard deviation and avg values
+        #TODO: The round number should specify how many are returned
+        #TODO: set a mimimum number of loras in inputs and keep processing images until all promps are completed
+        #TODO: maybe grab next 3 lowest and genrate to compare avarages if one in test set raises above lowest in previous images instead of grabbing next lowest 1?
+
         
-        if not self.is_first_round_complete(test_results, found_lora_relative_filepaths):
-            self.do_first_round(prompts[0], test_results, found_lora_relative_filepaths)
+        if not self.is_round_complete(test_results, rounds_loras_rel_paths):
+            self.do_round(prompts[0], test_results, rounds_loras_rel_paths)
 
         '''
 
@@ -6740,21 +6745,54 @@ class BKAdvLoRATestingNode:
         return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
         #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
 
-    def get_lora_name_from_relative_path(self, lora_relative_path):
-        return os.path.splitext(os.path.basename(lora_relative_path))[0]
+    def get_lora_name_from_relative_path(self, lora_rel_path):
+        return os.path.splitext(os.path.basename(lora_rel_path))[0]
 
-    def is_first_round_complete(self, test_results, found_lora_relative_paths):
-        for found_lora in found_lora_relative_paths:
-            lora_name = self.get_lora_name_from_relative_path(found_lora)
-            if not self.is_lora_tested_in_round(test_results, lora_name, 1):
+    def is_round_complete(self, test_results, lora_relative_paths, round):
+        for lora_rel_path in lora_relative_paths:
+            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
+            if not self.is_lora_completed_to_round(test_results, lora_name, round):
                 return False
         return True
+
+    def do_round(self, prompts, test_results, lora_rel_paths, round):
+        for lora_rel_path in lora_rel_paths:
+            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
+            if not self.is_lora_completed_to_round(test_results, lora_name, round):
+                self.do_missing_lora_tests_to_round(prompts, lora_rel_path, round, test_results)
+                break
+        return
     
-    def is_lora_tested_in_round(self, test_results, lora_name_search, round_search):
-        if any(lora_name == lora_name_search and round == round_search for lora_name, prompt_name, round, value in test_results):
-            return True
-        else:
-            return False
+    def do_missing_lora_tests_to_round(self, prompts, lora_rel_path, current_round, test_results):
+        for prev_round in range(1, current_round + 1):
+            
+            prompt_for_prev_round = self.get_prompt_for_round(prompts, prev_round)
+            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
+            if not prompt_for_prev_round:
+                raise ValueError(f"When generating images for lora [{lora_name}], failed to find prompt for round [{current_round}].")
+            positive, negative, prompt_name, prompt_idx = prompt_for_prev_round
+
+            if not self.is_lora_completed_to_round(test_results, lora_name,  prev_round):
+                filename = self.get_image_filename(lora_name, prompt_name)
+                return (positive, negative, prompt_name, prompt_idx, filename, lora_rel_path)
+
+
+    
+    def get_prompt_for_round(self, prompts, idx):
+        for prompt in prompts:
+            if prompt[3] == idx:  # check if idx matches round_idx
+                return prompt
+        return None  # return None if no match found
+        
+    def get_image_filename(self, prompt_name, lora_rel_path):
+        lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
+        return f"{prompt_name}_{lora_name}"
+    
+    def is_lora_completed_to_round(self, test_results, lora_name_search, round_search):
+        for prev_round in range(1, round_search + 1):
+            if not any(lora_name == lora_name_search and round == prev_round for lora_name, prompt_name, round, value in test_results):
+                return False
+        return True
 
 
     def get_test_results_filepath(self, test_results_folder):
