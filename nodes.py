@@ -6911,7 +6911,7 @@ class BKLoRATestAdvanced:
         prompt_name = ""
         filename = ""
         lora_path = ""
-        lora_path = ""
+        lora_name = ""
         lora_trigger = ""
 
         # Fail early if any of the required inputs are empty
@@ -6947,16 +6947,6 @@ class BKLoRATestAdvanced:
 
         tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
 
-
-
-
-
-
-        #TODO: Create code that will filter the loras based on their standard deviation and avg values
-        #TODO: The round number should specify how many are returned
-        #TODO: set a mimimum number of loras in inputs and keep processing images until all promps are completed
-        #TODO: maybe grab next 3 lowest and genrate to compare avarages if one in test set raises above lowest in previous images instead of grabbing next lowest 1?
-
         first_round = 0
         round_result = []
          
@@ -6987,18 +6977,19 @@ class BKLoRATestAdvanced:
                 self.save_and_print_list(top_results, )
             raise ValueError(f"No more LoRAs left to process, all have been processed. Top LoRAs Saved in {self.top_loras_filename}.")
             
-        lora_rel_path, positive, negative, prompt_name = round_result
-        lora_name = self.get_lora_name_wo_extension(lora_rel_path)
+        lora_path, positive, negative, prompt_name = round_result
+        lora_name = self.get_lora_name_wo_extension(lora_path)
+        lora_full_path = folder_paths.get_full_path("loras", lora_path)
 
 
         filename = self.get_image_filename(lora_name, prompt_name)
 
-        lora_full_path = folder_paths.get_full_path("loras", lora_rel_path)
+        
         lora_trigger = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         print_debug_bar(self.is_debug)
         return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger)
-        #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
         top_loras_to_process = []
