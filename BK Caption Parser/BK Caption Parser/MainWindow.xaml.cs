@@ -2,8 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -97,15 +95,17 @@ namespace BK_Caption_Parser
             string captionImage = fileHashes[baseName].captionImage;
             string captionTextFile = fileHashes[baseName].captionText;
 
-            // Delete caption files
-            if (File.Exists(captionImage)) File.Delete(captionImage);
-            if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
+            var result = MessageBox.Show("Are you sure you want to delete the caption?", "Delete Caption", MessageBoxButton.YesNo);
+            if (result == MessageBoxResult.Yes)
+            {
+                // Delete caption files
+                if (File.Exists(captionImage)) File.Delete(captionImage);
+                if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
 
-            // Update the UI (set to "No Caption")
-            CaptionImageEnlarged.Source = null;
-            CaptionTextBoxEnlarged.Text = "No Caption Found";
-
-            // Optionally, update the ListView
+                // Update the UI (set to "No Caption")
+                CaptionImageEnlarged.Source = null;
+                CaptionTextBoxEnlarged.Text = "No Caption Found";
+            }
         }
 
         // Delete all (deletes the original, caption, and text files)
@@ -116,33 +116,45 @@ namespace BK_Caption_Parser
             string captionImage = fileHashes[baseName].captionImage;
             string captionTextFile = fileHashes[baseName].captionText;
 
-            // Delete all files in the set
-            if (File.Exists(originalImage)) File.Delete(originalImage);
-            if (File.Exists(captionImage)) File.Delete(captionImage);
-            if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
+            var result = MessageBox.Show("Are you sure you want to delete all files?", "Delete All", MessageBoxButton.YesNo);
+            if (result == MessageBoxResult.Yes)
+            {
+                // Delete all files in the set
+                if (File.Exists(originalImage)) File.Delete(originalImage);
+                if (File.Exists(captionImage)) File.Delete(captionImage);
+                if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
 
-            // Remove from dictionary and ListView
-            fileHashes.Remove(baseName);
-            imageSets.RemoveAll(x => Path.GetFileNameWithoutExtension(x.OriginalImage.UriSource.AbsolutePath) == baseName);
+                // Remove from dictionary and ListView
+                fileHashes.Remove(baseName);
+                imageSets.RemoveAll(x => Path.GetFileNameWithoutExtension(x.OriginalImage.UriSource.AbsolutePath) == baseName);
 
-            // Optionally, renumber the remaining sets and update ListView
+                // Refresh ListView
+                SetsListView.ItemsSource = null;
+                SetsListView.ItemsSource = imageSets;
+            }
         }
 
-        // Save updated caption text
+        // Save caption text
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
             string baseName = Path.GetFileNameWithoutExtension(OriginalImageEnlarged.Source.ToString());
             string captionTextFile = fileHashes[baseName].captionText;
 
-            // Save new caption text
-            File.WriteAllText(captionTextFile, CaptionTextBoxEnlarged.Text);
+            // Allow user to edit caption text
+            string newCaption = CaptionTextBoxEnlarged.Text;
+            File.WriteAllText(captionTextFile, newCaption);
 
-            // Update the hash in the dictionary
-            fileHashes[baseName] = (fileHashes[baseName].originalImage, captionTextFile, fileHashes[baseName].captionImage);
+            // Update the caption in memory
+            var selectedSet = imageSets.FirstOrDefault(x => Path.GetFileNameWithoutExtension(x.OriginalImage.UriSource.AbsolutePath) == baseName);
+            if (selectedSet != null)
+            {
+                selectedSet.CaptionText = newCaption;
+            }
+
+            MessageBox.Show("Caption saved successfully!", "Save Caption", MessageBoxButton.OK);
         }
     }
 
-    // Helper class to hold image set data
     public class ImageSet
     {
         public BitmapImage OriginalImage { get; set; }
