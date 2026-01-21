@@ -139,36 +139,50 @@ class TSVTestManager:
 
 
     def parse(self, tsv_reader: TSVReader, simularity_weight):
-        """Parse the dataframe to compute SD and AVG for each set and returns it as a list of [lora_name, std_dev, avg, rating]. Returns None if TSV file failed to parse."""
+        """
+        Parse the dataframe to compute SD and AVG for each set and return it as a list
+        of [lora_name, std_dev, avg, rating].
+        Returns an empty list if the TSV file failed to parse, or if the dataframe is empty.
+        """
         df = tsv_reader.to_dataframe()
-        
-        if df is None:
-            return None
 
-        # Group by 'lora_name' and 'prompt_name' and compute SD and AVG for each group
+        # Handle None OR empty DataFrame
+        if df is None or df.empty:
+            return []
+
         results = []
 
-        for (lora_name, prompt_name), group in df.groupby(['lora_name']):
+        # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
+        for lora_name, group in df.groupby('lora_name'):
             values = group['value'].values
-            
-            # Normalize values: (value - min) / (max - min) for each set
+
+            # Avoid division by zero when min_value == max_value
             min_value = values.min()
             max_value = values.max()
-            normalized_values = (values - min_value) / (max_value - min_value)
             
-            # Calculate mean and standard deviation of the normalized values
+            if min_value == max_value:
+                continue  # Skip if all values are the same
+
+            # Normalize values: (value - min) / (max - min)
+            normalized_values = (values - min_value) / (max_value - min_value)
+
+            # Calculate average and standard deviation
             avg_value = np.mean(normalized_values)
             stddev_value = np.std(normalized_values)
-            
-            # Append the results in the format: [lora_name, prompt_name, SD, AVG]
+
+            # Append the results in the format: [lora_name, stddev, avg]
             results.append([lora_name, stddev_value, avg_value])
 
+        # If no results were computed, return an empty list
+        if not results:
+            return []
+
+        # Add ratings based on similarity weight
         results = self.add_rating(results, simularity_weight)
 
-        # Sort loras by their rating in ascending order (smallest rating first)
-        results(key=lambda x: x[3])
+        # Sort by rating (ascending order)
+        results.sort(key=lambda x: x[3])
 
-        # returns [lora_name, std, avg, rating]
         return results
 
 def print_debug_header(is_debug, name):
@@ -6204,13 +6218,13 @@ class BKLoRATest:
                     
                     # Replace tag in prompt with most common lora tag found in metadata
                     self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
-                    lora_fill_path = folder_paths.get_full_path("loras", lora_path)
-                    self.print_debug(f"Full LoRA path: {lora_fill_path}")
+                    lora_full_path = folder_paths.get_full_path("loras", lora_path)
+                    self.print_debug(f"Full LoRA path: {lora_full_path}")
 
                     # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
                     # Wich should be its activation tag
                     if self.is_user_want_to_replace_tag(tag_to_replace):
-                        metadata_dict = self.get_safetensors_metadata_as_json(lora_fill_path)
+                        metadata_dict = self.get_safetensors_metadata_as_json(lora_full_path)
                         
                         # Try to read the embedded JSON metadata from the LoRA by reading its bytes directly 
                         if metadata_dict is not None:
@@ -6794,7 +6808,7 @@ class BKLoraAutoSwitcher:
 
         lora_name = self.get_lora_name_from_relative_path(loras_rel_paths_in_folder[idx])
         lora_full_path = folder_paths.get_full_path("loras", loras_rel_paths_in_folder[idx])
-        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_METADATA_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         print_debug_bar(self.is_debug)
         return(result[0], result[1], lora_name, idx, most_frequent_ss_tag)
@@ -6980,7 +6994,7 @@ class BKLoRATestAdvanced:
         filename = self.get_image_filename(lora_name, prompt_name)
 
         lora_full_path = folder_paths.get_full_path("loras", lora_rel_path)
-        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_METADATA_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         '''
 
@@ -7538,7 +7552,7 @@ class LoRAMetadataParser:
         return f"{{ {json_str} }}" if json_str else ""
 
     def _get_ss_tag_frequency_json_from_metadata(self):
-        ss_tags_string =  self.get_safetensors_metadata_as_json(200).get("ss_tag_frequency", None)
+        ss_tags_string =  self.get_safetensors_metadata_as_json().get("ss_tag_frequency", None)
         return json.loads(ss_tags_string)
 
     def get_most_frequent_ss_tag(self):
