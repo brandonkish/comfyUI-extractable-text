@@ -100,6 +100,7 @@ class TSVReader:
 class TSVTestManager:
     def __init__(self, tsv_reader: TSVReader, similartiy_weight: float):
         self.results = self.parse(tsv_reader, similartiy_weight)
+        self.is_debug = True
 
     def get_all_results(self):
         """Returns a list of all test results in format [lora_name, std_dev, avg, rating]. Returns None if the TSV could not be loaded."""
@@ -136,7 +137,10 @@ class TSVTestManager:
             results_with_ratings.append((lora, rating))
         
         return results_with_ratings
-
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
 
     def parse(self, tsv_reader: TSVReader, simularity_weight):
         """
@@ -159,7 +163,15 @@ class TSVTestManager:
             # Avoid division by zero when min_value == max_value
             min_value = values.min()
             max_value = values.max()
+
+            if not isinstance(min_value, float):
+                print(f"min_value is not float [{min_value}]")
+                continue
             
+            if not isinstance(max_value, float):
+                print(f"max_value is not float [{min_value}]")
+                continue
+          
             if min_value == max_value:
                 continue  # Skip if all values are the same
 
@@ -3916,6 +3928,11 @@ class BKGetNextMissingCheckpoint:
 
             return (checkpoint_model, checkpoint_clip, checkpoint_vae, folder_path, selected_checkpoint_name_wo_ext, combined_path,  remaining_checkpoints,found_checkpoints, unique_paths, selected_checkpoint, status)
 
+
+#########################################################################################################################################
+# BK Dynamic Checkpoints List
+#########################################################################################################################################
+
 class BKDynamicCheckpointsList:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
@@ -3942,8 +3959,8 @@ class BKDynamicCheckpointsList:
     
     #RETURN_TYPES = ("MODEL","CLIP","VAE")  # This specifies that the output will be text
     #RETURN_NAMES = ("MODEL","CLIP", "VAE")
-    RETURN_TYPES = ("MODEL", "CLIP", "VAE", "FLOAT", comfy.samplers.KSampler.SAMPLERS, "STRING", "INT", "STRING", "STRING", "INT")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "VAE", "CFG", "SAMPLER", "NAME", "TOTAL_CHECKPOINTS","UNIQUE_PATHS","SELECTED_CHECKPOINT","CHECKPOINT_NUM")
+    RETURN_TYPES = ("MODEL", "CLIP", "VAE", "FLOAT", comfy.samplers.KSampler.SAMPLERS, "STRING", "INT", "STRING", "STRING", "INT", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "VAE", "CFG", "SAMPLER", "NAME", "TOTAL_CHECKPOINTS","UNIQUE_PATHS","SELECTED_CHECKPOINT","CHECKPOINT_NUM", "CHECKPOINT_LIST",)
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Dynamic Checkpoints"  # Default label text
@@ -4011,6 +4028,10 @@ class BKDynamicCheckpointsList:
         # Sort the list alphabetically (case-insensitive)
         filtered_checkpoints.sort(key=str.lower)
 
+        checkpoint_list_text = ""
+        for checkpoint in filtered_checkpoints:
+            checkpoint_list_text += f"{checkpoint}\n"
+
         # Select a checkpoint based on the seed (rolls over if too large)
         idx = select % len(filtered_checkpoints)
         selected_checkpoint = filtered_checkpoints[idx]
@@ -4042,6 +4063,8 @@ class BKDynamicCheckpointsList:
             unique_paths,
             selected_checkpoint,
             idx,
+            checkpoint_list_text,
+            
         )
 
 def checkpointLoader(ckpt_name):
