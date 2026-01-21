@@ -6845,7 +6845,7 @@ class BKLoraAutoSwitcher:
 
 class BKLoRATestAdvanced:
     def __init__(self):
-        self.is_debug = False
+        self.is_debug = True
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
@@ -6882,7 +6882,7 @@ class BKLoRATestAdvanced:
             "prompts_tsv_filepath": ("STRING", {
                 "multiline": False,
             }),
-            "test_results_folder": ("STRING",),
+            "results_folder": ("STRING",),
             "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
             "num_of_loras": ("INT", {"default" : 1, "min" : 1}),
               
@@ -6891,8 +6891,8 @@ class BKLoRATestAdvanced:
             "tag_to_replace": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path", "prompt_name", "positive", "negative",  "filename", "most_frequent_lora_tag")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path","prompt_name",  "positive", "negative",  "filename", "lora_name", "lora_trigger")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Test (Advanced)"  # Default label text
@@ -6903,16 +6903,16 @@ class BKLoRATestAdvanced:
             path = os.path.join(self.output_dir, path)
         return path
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, test_results_folder, every_nth_lora, tag_to_replace = None):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, results_folder, every_nth_lora, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
         positive = ""
         negative = ""
         prompt_name = ""
         filename = ""
-        lora_name = ""
         lora_path = ""
-        most_frequent_ss_tag = ""
+        lora_path = ""
+        lora_trigger = ""
 
         # Fail early if any of the required inputs are empty
         if not lora_folder:
@@ -6921,10 +6921,10 @@ class BKLoRATestAdvanced:
         if not prompts_tsv_filepath:
             raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
         
-        if not test_results_folder:
+        if not results_folder:
             raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
 
-        test_results_folder = self.set_base_of_relative_paths_to_output_folder(test_results_folder)
+        results_folder = self.set_base_of_relative_paths_to_output_folder(results_folder)
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
@@ -6943,7 +6943,7 @@ class BKLoRATestAdvanced:
         if not all_prompts or len(all_prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
-        test_results_file_path = self.get_test_results_filepath(test_results_folder)
+        test_results_file_path = self.get_test_results_filepath(results_folder)
 
         tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
 
@@ -6994,45 +6994,10 @@ class BKLoRATestAdvanced:
         filename = self.get_image_filename(lora_name, prompt_name)
 
         lora_full_path = folder_paths.get_full_path("loras", lora_rel_path)
-        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        lora_trigger = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
-        '''
-
-        # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
-        # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
-        for idx, lora in enumerate(found_loras):
-            if idx % every_nth_lora != 0:
-                continue
-            for prompt in prompts:
-                positive, negative, name, idx = prompt
-
-                lora_path = lora
-                lora_name = self.get_lora_name_wo_extension(lora)
-                filename = f"{prompt_name}_{lora_name}"
-                filepath = os.path.join(test_results_folder, filename + ".png")
-
-                self.print_debug(f"Checking if file exists [{filepath}]")
-
-                if self.is_image_not_generated(filepath):
-                    # Load LoRA using path
-                    lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-                    
-                    # Replace tag in prompt with most common lora tag found in metadata
-                    lora_full_path = folder_paths.get_full_path("loras", lora_path)
-
-                    # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
-                    # Wich should be its activation tag
-                    if self.is_user_want_to_replace_tag(tag_to_replace):
-                        lora_metadata_parser = LoRAMetadataParser(lora_full_path)
-                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, lora_metadata_parser.get_most_frequent_ss_tag())
-
-                     # If the LoRA was loaded, apply the lora
-                    if len(lora_items) > 0:
-                        for item in lora_items:
-                            result = item.apply_lora(result[0], result[1])
-'''
         print_debug_bar(self.is_debug)
-        return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
+        return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger)
         #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
@@ -7293,11 +7258,11 @@ class TSVWriter:
                 writer = csv.writer(file, delimiter='\t')
                 writer.writerow(["lora_name", "prompt_name", "value"])  # Write header
 
-    def append_to_tsv(self, lora_name: str, prompt_name: str, round:int, value: float):
+    def append_to_tsv(self, lora_path: str, prompt_name: str, value: float):
         """Append data to the TSV file."""
         with open(self.filepath, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file, delimiter='\t')
-            writer.writerow([lora_name, prompt_name, round, value])  # Write the row
+            writer.writerow([lora_path, prompt_name, value])  # Write the row
 
 ##################################################################################################################
 # BK Adv LoRA Results Node
