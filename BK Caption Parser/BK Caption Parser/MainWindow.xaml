@@ -1,22 +1,27 @@
 ﻿<Window x:Class="BK_Caption_Parser.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Image Caption Viewer" Height="800" Width="1000" AllowDrop="True">
+        Title="Image Caption Viewer" Height="800" Width="1000" AllowDrop="True" Drop="Window_Drop">
     <Window.Resources>
         <!-- Define a DataTemplate for displaying the image set rows -->
         <DataTemplate x:Key="SetRowTemplate">
-            <StackPanel Orientation="Horizontal">
+            <Grid HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                <!-- Define three equal-width columns -->
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
                 <!-- Original Image -->
-                <Image Width="100" Height="100" Source="{Binding OriginalImage}" Stretch="UniformToFill"/>
-                <Label Content="Original" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="5"/>
+                <Image Grid.Column="0" Source="{Binding OriginalImage}" Stretch="UniformToFill" VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
 
                 <!-- Caption Image -->
-                <Image Width="100" Height="100" Source="{Binding CaptionImage}" Stretch="UniformToFill"/>
-                <Label Content="Caption Image" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="5"/>
+                <Image Grid.Column="1" Source="{Binding CaptionImage}" Stretch="UniformToFill" VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
 
                 <!-- Caption Text -->
-                <TextBox Width="200" Text="{Binding CaptionText}" VerticalAlignment="Center" HorizontalAlignment="Center" IsReadOnly="True" Margin="5"/>
-            </StackPanel>
+                <TextBox Grid.Column="2" Text="{Binding CaptionText}" IsReadOnly="True" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Margin="5" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+            </Grid>
         </DataTemplate>
     </Window.Resources>
 
