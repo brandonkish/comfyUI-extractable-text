@@ -41,6 +41,135 @@ except ImportError:
     piexif_loaded = False
 
 HEADER_LENGTH = 100
+MAX_SAFETENSOR_CHUNKS_TO_READ = 1000
+
+
+class TSVReader:
+    def __init__(self, tsv_filepath: str):
+        self.filepath = tsv_filepath
+        self.is_debug = True
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def to_dataframe(self):
+        """Reads the TSV file into a pandas dataframe. If file does not exist, or fails to load, returns an empty dataframe."""
+        self.print_debug(f"Loading TSV [{self.filepath}]")
+        if not os.path.exists(self.filepath):
+            print(f"File [{self.filepath}] does not exist. Could not open file.")
+            return pd.DataFrame()
+        
+        try:
+            # Try to open the file and read its content
+            with open(self.filepath, 'rb') as file:
+                # Read the file in binary mode
+                binary_content = file.read()
+                
+                # Decode the content to UTF-8, ignoring invalid characters
+                text_content = binary_content.decode('utf-8', errors='ignore')
+        
+        except (OSError, IOError) as e:
+            # Catch file-related errors like permission errors or file open issues
+            print(f"Error reading the file [{self.filepath}]: {e}")
+            return pd.DataFrame()  # Return an empty DataFrame if reading fails
+            
+        try:
+            # Use pandas to read the decoded text as a TSV string
+            tsv_data = StringIO(text_content)
+
+            # If the content is empty, handle gracefully
+            if not tsv_data.getvalue().strip():
+                print(f"The file [{self.filepath}] is empty or contains no data.")
+                return pd.DataFrame()  # Return an empty DataFrame if the content is empty
+            
+            # Attempt to read the file into a DataFrame
+            df = pd.read_csv(tsv_data, sep='\t')
+
+            if df.empty or len(df) < 1:
+                print(f"The file [{self.filepath}] is empty or contains no data.")
+                return pd.DataFrame()
+            
+        except (pd.errors.ParserError, ValueError) as e:
+            # Catch pandas-related parsing errors or if the DataFrame is empty
+            print(f"Error parsing the TSV file [{self.filepath}]: {e}")
+            return pd.DataFrame()  # Return an empty DataFrame if parsing fails
+
+        return df
+
+class TSVTestManager:
+    def __init__(self, tsv_reader: TSVReader, similartiy_weight: float):
+        self.results = self.parse(tsv_reader, similartiy_weight)
+
+    def get_all_results(self):
+        """Returns a list of all test results in format [lora_name, std_dev, avg, rating]. Returns None if the TSV could not be loaded."""
+        return self.results
+
+    def get_top_results(self, lora_count:int):
+        """Gets all the results from the TSV file. If the TSV file does not exist or fails to load, returns None"""
+
+        if self.results is None:
+            return None
+
+        # Ensure lora_count does not exceed the number of available results
+        lora_count = min(lora_count, len(self.get_all_results()))
+
+        # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
+        top_loras = [
+            [lora_name, stddev_value, avg_value, rating] 
+            for (lora_name, stddev_value, avg_value), rating in self.get_all_results()[:lora_count]
+        ]
+        
+        return top_loras
+
+    def add_rating(self, all_lora_results, simularity_weight):
+        
+        # Initialize an empty list to store loras with their ratings
+        results_with_ratings = []
+        
+        # Calculate ratings for each lora
+        for lora in all_lora_results:
+            lora_name, stddev_value, avg_value = lora
+            # Calculate the rating using the given formula
+            rating = (simularity_weight * avg_value) + ((1 - simularity_weight) * stddev_value)
+            # Append the lora along with its rating
+            results_with_ratings.append((lora, rating))
+        
+        return results_with_ratings
+
+
+    def parse(self, tsv_reader: TSVReader, simularity_weight):
+        """Parse the dataframe to compute SD and AVG for each set and returns it as a list of [lora_name, std_dev, avg, rating]. Returns None if TSV file failed to parse."""
+        df = tsv_reader.to_dataframe()
+        
+        if df is None:
+            return None
+
+        # Group by 'lora_name' and 'prompt_name' and compute SD and AVG for each group
+        results = []
+
+        for (lora_name, prompt_name), group in df.groupby(['lora_name']):
+            values = group['value'].values
+            
+            # Normalize values: (value - min) / (max - min) for each set
+            min_value = values.min()
+            max_value = values.max()
+            normalized_values = (values - min_value) / (max_value - min_value)
+            
+            # Calculate mean and standard deviation of the normalized values
+            avg_value = np.mean(normalized_values)
+            stddev_value = np.std(normalized_values)
+            
+            # Append the results in the format: [lora_name, prompt_name, SD, AVG]
+            results.append([lora_name, stddev_value, avg_value])
+
+        results = self.add_rating(results, simularity_weight)
+
+        # Sort loras by their rating in ascending order (smallest rating first)
+        results(key=lambda x: x[3])
+
+        # returns [lora_name, std, avg, rating]
+        return results
 
 def print_debug_header(is_debug, name):
     if is_debug:
@@ -1464,7 +1593,7 @@ class BKTSVRandomPrompt:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.name = ""
-        self.is_debug = False
+        self.is_debug = True
         self.name_column_suffix = "_name"
         self.negative_column_suffix = "_negative"
 
@@ -1504,12 +1633,10 @@ class BKTSVRandomPrompt:
         tsv_file_path = self.convert_relative_path_to_abs(self.output_dir, tsv_file_path)
 
         # Now load the new file with pandas
-        dataframe = TSVReader(tsv_file_path).to_dataframe()
-
-        if dataframe.empty or len(dataframe) < 1:
-            raise ValueError("The file loaded as empty. Is there data in the file?")
         
-        prompt_parser = TSVPromptParser(dataframe)
+
+        
+        prompt_parser = TSVPromptParser(TSVReader(tsv_file_path))
         prompts = prompt_parser.get_all_prompts()
         tag_manager = TSVTagManager(prompt_parser.get_all_tags())
 
@@ -1517,10 +1644,19 @@ class BKTSVRandomPrompt:
         # If a name was provided get the prompt by name
         if prompt_name_search:
             matching_prompts = self.get_all_prompts_starting_with_name(prompts, prompt_name_search)
-            if not self.is_any_prompts_in_list(matching_prompts):
+
+            for prompt in matching_prompts:
+                self.print_debug(f"matching prompt[{prompt}]")
+
+            if not matching_prompts:
+                raise ValueError(f"matching prompts returned None for [{prompt_name_search}] in the TSV.")
+            
+            if len(matching_prompts) == 0:
                 raise ValueError(f"No prompts found where the name starts with [{prompt_name_search}] in the TSV.")
         else:
             matching_prompts = prompts
+
+        self.print_debug(f"len(matching_prompts)[{len(matching_prompts)}]")
 
         idx = self.convert_seed_to_idx(len(matching_prompts), seed)
         pos_prompt, neg_prompt, prompt_name, prompt_idx = matching_prompts[idx]
@@ -1557,7 +1693,7 @@ class BKTSVRandomPrompt:
         return prompt.replace(tag, tag_value)
     
     def is_any_prompts_in_list(self, prompts):
-        return len(prompts) < 1
+        return len(prompts) == 0
     
     def is_a_name_column(self, value: str) -> bool:
 
@@ -1616,8 +1752,12 @@ class BKTSVRandomPrompt:
 
         for prompt in prompts:
             positive, negative, name, idx = prompt
-            if name.startswith(start_with_name, na = False):
-                all_matching_prompts.append(prompt)
+            self.print_debug(f"name[{name}]")
+            if name:
+                self.print_debug(f"name[{name}] is true")
+                if name.startswith(str(start_with_name)):
+                    self.print_debug(f"name[{name}] starts with [{start_with_name}]")
+                    all_matching_prompts.append(prompt)
 
         return all_matching_prompts
         
@@ -1628,6 +1768,9 @@ class BKTSVRandomPrompt:
         self.print_debug(f"seed[{seed}]")
 
         if seed == 0:
+            return 0
+        
+        if length == 0:
             return 0
 
         return seed % length  # Adjust seed to be within valid range for the column
@@ -5936,7 +6079,7 @@ class BKLoadImage:
 
 #TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
 
-class BKLoRATestingNode:
+class BKLoRATest:
     def __init__(self):
         self.is_debug = True
         self.selected_loras = SelectedLoras()
@@ -6596,6 +6739,8 @@ class BKLoraAutoSwitcher:
 
                 folder_paths.append(folder_path)
 
+
+
         # Convert the set to a sorted list and return it
         return sorted(list(folder_paths))
 
@@ -6614,8 +6759,8 @@ class BKLoraAutoSwitcher:
          "optional": {
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "INT")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "idx")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "INT", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "idx","frequent_tag")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Auto Switcher"  # Default label text
@@ -6648,9 +6793,11 @@ class BKLoraAutoSwitcher:
                             result = item.apply_lora(result[0], result[1])
 
         lora_name = self.get_lora_name_from_relative_path(loras_rel_paths_in_folder[idx])
+        lora_full_path = folder_paths.get_full_path("loras", loras_rel_paths_in_folder[idx])
+        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_METADATA_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         print_debug_bar(self.is_debug)
-        return(result[0], result[1], lora_name, idx)
+        return(result[0], result[1], lora_name, idx, most_frequent_ss_tag)
     
     
     
@@ -6682,16 +6829,17 @@ class BKLoraAutoSwitcher:
 
 #TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
 
-class BKAdvLoRATestingNode:
+class BKLoRATestAdvanced:
     def __init__(self):
         self.is_debug = False
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
         self.test_results_filename = "lora_test_results.ltr"
+        self.top_loras_filename = "top_loras.txt"
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, tag_to_replace = None):
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, test_results_folder, every_nth_lora, tag_to_replace = None):
         return float("nan")
 
     @classmethod
@@ -6722,6 +6870,7 @@ class BKAdvLoRATestingNode:
             }),
             "test_results_folder": ("STRING",),
             "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+            "num_of_loras": ("INT", {"default" : 1, "min" : 1}),
               
          },
          "optional": {
@@ -6729,10 +6878,10 @@ class BKAdvLoRATestingNode:
          }}
 
     RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "most_frequent_lora_tag")
+    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path", "prompt_name", "positive", "negative",  "filename", "most_frequent_lora_tag")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
-    LABEL = "BK Adv LoRA Testing Node"  # Default label text
+    LABEL = "BK LoRA Test (Advanced)"  # Default label text
     OUTPUT_NODE = True
 
     def set_base_of_relative_paths_to_output_folder(self, path):
@@ -6740,7 +6889,7 @@ class BKAdvLoRATestingNode:
             path = os.path.join(self.output_dir, path)
         return path
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, test_results_folder, every_nth_lora, tag_to_replace = None):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
         positive = ""
@@ -6765,27 +6914,25 @@ class BKAdvLoRATestingNode:
 
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
-        all_rel_lora_paths_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+        all_loras_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        if all_rel_lora_paths_in_folder is None or len(all_rel_lora_paths_in_folder) <= 0:
+        if all_loras_in_folder is None or len(all_loras_in_folder) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         else:
-            for lora in all_rel_lora_paths_in_folder:
+            for lora in all_loras_in_folder:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
-        prompts_dataframe = TSVReader(prompts_tsv_filepath).to_dataframe()
-
-        if prompts_dataframe.empty:
-            raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
+        prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
         
-        prompts = TSVPromptParser(prompts_dataframe).get_all_prompts()
+        all_prompts = prompt_parser.get_all_prompts_to_lower_name()
 
-        if not prompts or len(prompts) <= 0:
+        if not all_prompts or len(all_prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
         test_results_file_path = self.get_test_results_filepath(test_results_folder)
-        test_results_dataframe = TSVReader(test_results_file_path)
-        test_results = TSVLoRATestResultsParser(test_results_dataframe).parse()
+
+        tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
+
 
 
 
@@ -6796,16 +6943,44 @@ class BKAdvLoRATestingNode:
         #TODO: set a mimimum number of loras in inputs and keep processing images until all promps are completed
         #TODO: maybe grab next 3 lowest and genrate to compare avarages if one in test set raises above lowest in previous images instead of grabbing next lowest 1?
 
+        first_round = 0
+        round_result = []
+         
+        # if first round, create rating for all images, else, process the top loras
+        for round in range(1, len(all_prompts) + 1):
+            loras_to_process = []
 
-        for prompt, idx in prompts:
-            if idx == 0:
-                if self.is_all_loras_have_start_rating():
-                    continue
-                else
+            if round == first_round:
+                loras_to_process = all_loras_in_folder
+            
+            else:
+                loras_to_process = self.get_top_loras(tests_manager, num_of_loras)
 
-        
-        if not self.is_round_complete(test_results, all_rel_lora_paths_in_folder):
-            self.do_round(prompts[0], test_results, all_rel_lora_paths_in_folder)
+            # If the results file failed to read, set it to all loras, (Probably first run)
+            if loras_to_process is None or len(loras_to_process) == 0:
+                loras_to_process = all_loras_in_folder
+    
+            round_result = self.do_round(all_prompts, tests_manager, loras_to_process, round)
+            if round_result:
+                break
+
+
+        if not round_result:
+            top_results = tests_manager.get_top_results(num_of_loras)
+            if top_results is None:
+                print(f"Could not load TSV file to get top results. Is this the first run and no results generated yet?")
+            else:
+                self.save_and_print_list(top_results, )
+            raise ValueError(f"No more LoRAs left to process, all have been processed. Top LoRAs Saved in {self.top_loras_filename}.")
+            
+        lora_rel_path, positive, negative, prompt_name = round_result
+        lora_name = self.get_lora_name_wo_extension(lora_rel_path)
+
+
+        filename = self.get_image_filename(lora_name, prompt_name)
+
+        lora_full_path = folder_paths.get_full_path("loras", lora_rel_path)
+        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_METADATA_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         '''
 
@@ -6846,6 +7021,48 @@ class BKAdvLoRATestingNode:
         return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
         #raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
 
+    def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
+        top_loras_to_process = []
+
+        # Printing the table header with proper alignment
+        print(f"{'Rank':<5}{'Lora Path':<30}{'Deviation':<15}{'Likeness':<10}{'Rating':<6}")
+        print("-" * 70)  # Just a separator for the table
+        
+        # Iterate over the top results and print each in a formatted row
+        top_results = tests_manager.get_top_results(num_of_loras)
+        
+        if top_results is None:
+            print(f"No top results generated yet. Returning all results to be tested.")
+            return None
+        
+        for rank, top_lora_test in enumerate(tests_manager.get_top_results(num_of_loras), start=1):
+            lora_path, sd, avg, rating = top_lora_test
+            print(f"{rank:<5}{lora_path:<30}{sd:<15}{avg:<10}{rating:<6}")
+            top_loras_to_process.append(lora_path)
+
+        return top_loras_to_process
+
+
+
+    def save_and_print_list(self, data, filename):
+        # Sort the data by the 'rating' value (index 3)
+        sorted_data = sorted(data, key=lambda x: x[3])
+        
+        # Print the table header
+        print(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}")
+        
+        # Iterate through the sorted data and print each row
+        for idx, item in enumerate(sorted_data, start=1):
+            name, sd, avg, rating = item
+            print(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}")
+        
+        # Save the data to a text file
+        with open(filename, "w") as file:
+            file.write(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}\n")
+            for idx, item in enumerate(sorted_data, start=1):
+                name, sd, avg, rating = item
+                file.write(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}\n")
+
     def is_all_loras_have_start_rating(self, all_lora_rel_paths, test_results):
         # Extract the lora names from the test results
         lora_names_in_test_results = [result[0] for result in test_results]
@@ -6867,33 +7084,28 @@ class BKAdvLoRATestingNode:
     def get_lora_name_from_relative_path(self, lora_rel_path):
         return os.path.splitext(os.path.basename(lora_rel_path))[0]
 
-    def is_round_complete(self, test_results, lora_relative_paths, round):
-        for lora_rel_path in lora_relative_paths:
-            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
-            if not self.is_lora_completed_to_round(test_results, lora_name, round):
-                return False
-        return True
 
-    def do_round(self, prompts, test_results, lora_rel_paths, round):
+    def do_round(self, prompts, test_manager: TSVTestManager, lora_rel_paths, round):
         for lora_rel_path in lora_rel_paths:
-            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
-            if not self.is_lora_completed_to_round(test_results, lora_name, round):
-                self.do_missing_lora_tests_to_round(prompts, lora_rel_path, round, test_results)
-                break
-        return
-    
-    def do_missing_lora_tests_to_round(self, prompts, lora_rel_path, current_round, test_results):
+            missing_test = self.get_next_missing_test(prompts, lora_rel_path, round, test_manager)
+            if missing_test:
+                return missing_test
+        
+        return None
+
+    def get_next_missing_test(self, prompts, lora_rel_path, current_round, test_manager: TSVTestManager):
         for prev_round in range(1, current_round + 1):
             
-            prompt_for_prev_round = self.get_prompt_for_round(prompts, prev_round)
-            lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
-            if not prompt_for_prev_round:
-                raise ValueError(f"When generating images for lora [{lora_name}], failed to find prompt for round [{current_round}].")
-            positive, negative, prompt_name, prompt_idx = prompt_for_prev_round
+            prev_test_prompt = self.get_prompt_for_round(prompts, prev_round)
+            
+            if not prev_test_prompt:
+                raise ValueError(f"When generating images for lora [{lora_rel_path}], failed to find prompt for round [{current_round}].")
 
-            if not self.is_lora_completed_to_round(test_results, lora_name,  prev_round):
-                filename = self.get_image_filename(lora_name, prompt_name)
-                return (positive, negative, prompt_name, prompt_idx, filename, lora_rel_path)
+            positive, negative, prompt_name, prompt_idx = prev_test_prompt
+            if not self.has_lora_completed_round(test_manager, lora_rel_path, prompt_name):
+                return (lora_rel_path, positive, negative, prompt_name)
+
+        return None
 
 
     
@@ -6907,11 +7119,10 @@ class BKAdvLoRATestingNode:
         lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
         return f"{prompt_name}_{lora_name}"
     
-    def is_lora_completed_to_round(self, test_results, lora_name_search, round_search):
-        for prev_round in range(1, round_search + 1):
-            if not any(lora_name == lora_name_search and round == prev_round for lora_name, prompt_name, round, value in test_results):
-                return False
-        return True
+    def has_lora_completed_round(self, test_manager: TSVTestManager, lora_rel_path_search, prompt_name_search):
+            return any(lora_name == lora_rel_path_search and prompt_name == prompt_name_search for lora_name, prompt_name, round, value in test_manager.get_all_results())
+
+
 
 
     def get_test_results_filepath(self, test_results_folder):
@@ -7080,14 +7291,14 @@ class TSVWriter:
 
 #TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
 
-class BKAdvLoRAResultsTSVWriter:
+class BKLoraTestSaveAdvanced:
     def __init__(self):
         self.is_debug = False
         self.filename = "lora_test_results.ltr"
 
 
     @classmethod
-    def IS_CHANGED(self, results_folder):
+    def IS_CHANGED(self, results_folder, lora_path, prompt_name, value):
         return float("nan")
 
     
@@ -7095,9 +7306,8 @@ class BKAdvLoRAResultsTSVWriter:
     def INPUT_TYPES(cls):
         return {"required": {
             "results_folder":("STRING",),
-            "lora_name":("STRING",),
+            "lora_path":("STRING",),
             "prompt_name":("STRING",),
-            "round": ("INT",),
             "value":("FLOAT",),
 
          },
@@ -7107,10 +7317,10 @@ class BKAdvLoRAResultsTSVWriter:
     RETURN_NAMES = ("status",)
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
-    LABEL = "BK Adv LoRA Results TSV Writer"  # Default label text
+    LABEL = "BK Lora Test Save (Advanced)"  # Default label text
     OUTPUT_NODE = True
 
-    def process(self, results_folder, lora_name, prompt_name, round, value):
+    def process(self, results_folder, lora_path, prompt_name, value):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
 
         value = self.convert_to_basic_float(value)
@@ -7119,9 +7329,9 @@ class BKAdvLoRAResultsTSVWriter:
         self.print_debug(f"results_filepath: [{results_filepath}]")
         tsv_writer = TSVWriter(results_filepath)
 
-        tsv_writer.append_to_tsv(lora_name, prompt_name, round, value)
+        tsv_writer.append_to_tsv(lora_path, prompt_name, value)
 
-        status = f"{lora_name} - {prompt_name} - {value}"
+        status = f"{lora_path} - {prompt_name} - {value}"
         print(f"BKAdvLoRAResultsTSVWriter: {status}")
         return(status,)
     
@@ -7137,72 +7347,15 @@ class BKAdvLoRAResultsTSVWriter:
         # If it's a single value, just convert it to a float
         return float(np_float)
 
-class TSVLoRATestResultsParser:
-    def __init__(self, similartiy_weight):
-        self.tsv_reader = TSVReader()
-        self.similarity_weight = similartiy_weight
 
 
-    def get_top_loras(self, lora_count):
-        # Call the parse method to get all loras
-        all_calc_loras = self.parse()
-        
-        # Initialize an empty list to store loras with their ratings
-        lora_ratings = []
-        
-        # Calculate ratings for each lora
-        for lora in all_calc_loras:
-            lora_name, prompt_name, stddev_value, avg_value = lora
-            # Calculate the rating using the given formula
-            rating = (self.similarity_weight * avg_value) + ((1 - self.similarity_weight) * stddev_value)
-            # Append the lora along with its rating
-            lora_ratings.append((lora, rating))
-        
-        # Sort loras by their rating in ascending order (smallest rating first)
-        lora_ratings.sort(key=lambda x: x[1])
-        
-        # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
-        top_loras = [
-            [lora_name, prompt_name, stddev_value, avg_value, rating] 
-            for (lora_name, prompt_name, stddev_value, avg_value), rating in lora_ratings[:lora_count]
-        ]
-        
-        return top_loras
-
-
-    def parse(self):
-        """Parse the dataframe to compute SD and AVG for each set."""
-        df = self.tsv_reader.to_dataframe()
-
-        # Group by 'lora_name' and 'prompt_name' and compute SD and AVG for each group
-        results = []
-
-        for (lora_name, prompt_name), group in df.groupby(['lora_name', 'prompt_name']):
-            values = group['value'].values
-            
-            # Normalize values: (value - min) / (max - min) for each set
-            min_value = values.min()
-            max_value = values.max()
-            normalized_values = (values - min_value) / (max_value - min_value)
-            
-            # Calculate mean and standard deviation of the normalized values
-            avg_value = np.mean(normalized_values)
-            stddev_value = np.std(normalized_values)
-            
-            # Append the results in the format: [lora_name, prompt_name, SD, AVG]
-            results.append([lora_name, prompt_name, stddev_value, avg_value])
-
-        return results
-
-import pandas as pd
-import re
 
 class TSVPromptParser:
-    def __init__(self, dataframe: pd.DataFrame):
-        self.dataframe = dataframe
+    def __init__(self, tsv_reader: TSVReader):
+        self.dataframe = tsv_reader.to_dataframe()
         self.headers = []
 
-    def sanitize_name(self, name: str, row_idx: int) -> str:
+    def _sanitize_name(self, name: str, row_idx: int) -> str:
         """Sanitize the 'name' field by removing invalid filename characters."""
         invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'  # Invalid characters for filenames
         if re.search(invalid_chars, name):
@@ -7212,6 +7365,8 @@ class TSVPromptParser:
         return name
     
     def get_all_prompts_to_lower_name(self):
+        """Returns a list of all prompts in the TSV in format [positive, negative, name, idx] where all names are set to lowercase. Returns None if the TSV failed to load."""
+        
         sanatized_prompts = []
         for prompt in self.get_all_prompts():
             positive, negative, name, idx = prompt
@@ -7223,12 +7378,17 @@ class TSVPromptParser:
     
     
     def get_all_tags(self):
+        """Returns a list of all Tags in the TSV in format [positive, negative, name, idx, tag_name]. Returns None if the TSV failed to load."""
         # Initialize an empty list to hold the tags
         tags_list = []
 
         # Find all sets based on the column names
         # A dictionary to map base name to its corresponding positive, negative, and name columns
         set_columns = {}
+
+        if self.dataframe is None:
+            print(f"Failed to get tags. File failed to load.")
+
 
         for header in self.dataframe.columns:
             if header.endswith('_positive'):
@@ -7261,7 +7421,11 @@ class TSVPromptParser:
         return tags_list
 
     def get_all_prompts(self):
-        """Parse the DataFrame and return a list of valid objects in the specified format."""
+        """ Returns a list of all prompts in the TSV in format [positive, negative, name, idx]. Returns None if the TSV failed to load."""
+        if self.dataframe is None:
+            print(f"Failed to get all prompts. File failed to load.")
+            return None
+
         if 'positive' not in self.dataframe.columns:
             raise ValueError("Missing 'positive' column. 'positive' column is required.")
         if 'name' not in self.dataframe.columns:
@@ -7285,7 +7449,7 @@ class TSVPromptParser:
                 continue
 
             # Sanitize the 'name' to remove invalid filename characters
-            sanitized_name = self.sanitize_name(name, idx)
+            sanitized_name = self._sanitize_name(name, idx)
 
             # Ensure 'negative' column is a string or empty string if invalid
             if not isinstance(negative, str):
@@ -7297,47 +7461,28 @@ class TSVPromptParser:
         return parsed_data
 
 
-import pandas as pd
-import re
-
-class TSVReader:
-    def __init__(self, filepath: str):
-        self.filepath = filepath
-        self.is_debug = False
-
-    def to_dataframe(self):
-        """Reads the TSV file into a pandas dataframe."""
-        with open(self.filepath, 'rb') as file:
-            # Read the file in binary mode
-            binary_content = file.read()
-            
-            # Decode the content to UTF-8, ignoring invalid characters
-            text_content = binary_content.decode('utf-8', errors='ignore')
-            
-        # Use pandas to read the decoded text as a TSV string
-        from io import StringIO
-        tsv_data = StringIO(text_content)
-        
-        # Return the parsed DataFrame
-        df = pd.read_csv(tsv_data, sep='\t')
-        return df
-
-
-import json
-
 class LoRAMetadataParser:
-    def __init__(self, lora_full_path: str):
+    def __init__(self, lora_full_path: str, max_chunks:int):
         self.lora_full_path = lora_full_path
-        self.is_debug = False
+        self.max_chunks = max_chunks
+        self.is_debug = True
 
     def get_safetensors_metadata_as_json(self):
+        """ Returns the metadata as a json file stored in the LoRA Safetensors Header"""
         with open(self.lora_full_path, 'rb') as file:
             buffer = b''
             metadata_start = b'"__metadata__":'
             metadata_json_str = ""
 
+            curr_chunk = 0
+
             while chunk := file.read(1024):  # Read in chunks
                 buffer += chunk
+                curr_chunk += 1
+
+                if curr_chunk >= self.max_chunks:
+                    print(f"Failed to read safetensors metadata within the maximum of [{self.max_chunks}] chunks.")
+                    break
 
                 buffer, is_metadata_start_found = self._truncate_buffer_to_start_of_metadata(buffer, metadata_start)
 
@@ -7348,13 +7493,17 @@ class LoRAMetadataParser:
 
             metadata_json_str = self._add_outer_braces(metadata_json_str)
 
+            self.print_debug(f"metadata_json_str[{metadata_json_str}]")
+
             if metadata_json_str:
                 try:
+                    # Decode the JSON and return
                     metadata_dict = json.loads(metadata_json_str)
-                    return metadata_dict.get("__metadata__", None)
+                    self.print_debug("Decoded metadata JSON (pretty printed):")
+                    self.print_debug(json.dumps(metadata_dict, indent=4))
+                    return metadata_dict["__metadata__"]
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     print(f"Error decoding JSON: {e}")
-                    return None
 
             print("No __metadata__ section found.")
             return None
@@ -7366,26 +7515,37 @@ class LoRAMetadataParser:
         return buffer, False
 
     def _parse_metadata_from_buffer_as_str(self, buffer):
-        try:
-            json_str = buffer.decode('utf-8')
-            start_idx = json_str.find('"__metadata__":')
-            end_idx = json_str.find('}', start_idx)
-            return json_str[start_idx:end_idx+1]
-        except Exception as e:
-            print(f"Error parsing metadata: {e}")
-            return ""
+        if not buffer:
+            return None
+        if len(buffer) < 2:
+            return None
+        is_first_brace_found = False
+        brace_count = 0
+
+        for idx, byte in enumerate(buffer):
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return buffer[:idx + 1].decode('utf-8')
+
+        return None
 
     def _add_outer_braces(self, json_str):
         return f"{{ {json_str} }}" if json_str else ""
 
-    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
-        return metadata_dict.get("ss_tag_frequency", None)
+    def _get_ss_tag_frequency_json_from_metadata(self):
+        ss_tags_string =  self.get_safetensors_metadata_as_json(200).get("ss_tag_frequency", None)
+        return json.loads(ss_tags_string)
 
-    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+    def get_most_frequent_ss_tag(self):
         max_tag = None
         max_value = -1
 
-        for tag, tag_info in ss_tag_frequency_dict.items():
+        for tag, tag_info in self._get_ss_tag_frequency_json_from_metadata().items():
             for inner_tag, value in tag_info.items():
                 if value > max_value:
                     max_value = value
@@ -7398,12 +7558,12 @@ class LoRAMetadataParser:
             print(message)
 
 class TSVTagManager:
-    def __init__(self, tags):
+    def __init__(self, prompt_parser: TSVPromptParser):
         """
         Initialize the TSVTagManager with a list of tags.
         Each tag is in the format [positive, negative, name, idx, tag_name].
         """
-        self.tags = tags
+        self.tags = prompt_parser.get_all_tags()
         self.incremental_pos = 0  # Initialize the class counter
         
     def get_tags_by_name(self, tag_name):
@@ -7499,7 +7659,6 @@ NODE_CLASS_MAPPINGS = {
     "BK Remove Mask At Idx": BKRemoveMaskAtIdx,
     "BK Remove Mask At Idx SAM3": BKRemoveMaskAtIdxSAM3,
     "BK TSV Prompt Reader": BKTSVPromptReader,
-    "BK LoRA Testing Node": BKLoRATestingNode,
     "BK Get Next Missing Checkpoint": BKGetNextMissingCheckpoint,
     "BK Is Vertical Image": BKIsVerticalImage,
     "BK Is A Greater Than B INT": BKIsAGreaterThanBINT,
@@ -7525,8 +7684,9 @@ NODE_CLASS_MAPPINGS = {
     "BK Image Size Test": BKImageSizeTest,
     "BK Get Next Caption File": BKGetNextCaptionFile,
     "BK Image Sync": BKImageSync,
-    "BK Adv LoRA Testing Node": BKAdvLoRATestingNode,
-    "BK Adv LoRA Results TSV Writer": BKAdvLoRAResultsTSVWriter,
+    "BK LoRA Test": BKLoRATest,
+    "BK LoRA Test (Advanced)": BKLoRATestAdvanced,
+    "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
     "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
 
 }
