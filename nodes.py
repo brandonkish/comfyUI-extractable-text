@@ -6932,9 +6932,6 @@ class BKLoRATestAdvanced:
 
         if all_loras_in_folder is None or len(all_loras_in_folder) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
-        else:
-            for lora in all_loras_in_folder:
-                self.print_debug(f"Found LoRA: [{lora}]")
 
         prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
         
@@ -6947,7 +6944,7 @@ class BKLoRATestAdvanced:
 
         tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
 
-        first_round = 0
+        first_round = 1
         round_result = []
          
         # if first round, create rating for all images, else, process the top loras
@@ -6955,16 +6952,22 @@ class BKLoRATestAdvanced:
             loras_to_process = []
 
             if round == first_round:
+                self.print_debug(f"First Round.")
                 loras_to_process = all_loras_in_folder
             
             else:
+                self.print_debug(f"Round [{round}]")
                 loras_to_process = self.get_top_loras(tests_manager, num_of_loras)
+
+            self.print_debug(f"len(loras_to_process)[{len(loras_to_process)}]")
 
             # If the results file failed to read, set it to all loras, (Probably first run)
             if loras_to_process is None or len(loras_to_process) == 0:
                 loras_to_process = all_loras_in_folder
     
             round_result = self.do_round(all_prompts, tests_manager, loras_to_process, round)
+
+            print(f"round_result [{round_result}]")
             if round_result:
                 break
 
@@ -7435,7 +7438,7 @@ class LoRAMetadataParser:
     def __init__(self, lora_full_path: str, max_chunks:int):
         self.lora_full_path = lora_full_path
         self.max_chunks = max_chunks
-        self.is_debug = True
+        self.is_debug = False
 
     def get_safetensors_metadata_as_json(self):
         """ Returns the metadata as a json file stored in the LoRA Safetensors Header"""
