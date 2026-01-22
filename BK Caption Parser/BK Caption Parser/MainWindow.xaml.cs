@@ -54,6 +54,52 @@ namespace BK_Caption_Parser
             }
         }
 
+        private void Delete_Click(object sender, RoutedEventArgs e)
+        {
+            // Get the selected ImageSet associated with the current button click
+            var button = sender as Button;
+            var imageSet = button?.DataContext as ImageSet;
+
+            if (imageSet == null) return;
+
+            // Confirm delete action
+            var confirmResult = MessageBox.Show("Are you sure you want to delete all files for this set?",
+                                                 "Confirm Delete",
+                                                 MessageBoxButton.YesNo,
+                                                 MessageBoxImage.Warning);
+            if (confirmResult == MessageBoxResult.No)
+                return;
+
+            try
+            {
+                // Delete associated files
+                DeleteFileIfExists(imageSet.CaptionTextPath);
+                DeleteFileIfExists(imageSet.OriginalImagePath);
+                DeleteFileIfExists(imageSet.CaptionImagePath);
+
+                // Delete the .updatecap file if exists
+                var updateCapFilePath = Path.ChangeExtension(imageSet.CaptionTextPath, ".updatecap");
+                DeleteFileIfExists(updateCapFilePath);
+
+                // Remove the image set from the collection and return to the list
+                ImageSets.Remove(imageSet);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error deleting files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void DeleteFileIfExists(string filePath)
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+                Debug.WriteLine($"Deleted: {filePath}");
+            }
+        }
+
+
 
         private void CaptionTextBox_LostFocus(object sender, RoutedEventArgs e)
         {

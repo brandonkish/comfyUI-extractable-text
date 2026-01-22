@@ -24,17 +24,34 @@
                         <DataTemplate>
                             <Border BorderThickness="1" Margin="5">
                                 <StackPanel Orientation="Horizontal">
+                                    <!-- Grid to contain Image and Button -->
+
+                                    <!-- Delete Button below the Image -->
+                                    <Button Content="Delete"
+                                                Width="75"
+                                                
+                                                Background="Red"
+                                                Foreground="White"
+                                                Grid.Row="1"
+                                                VerticalAlignment="Stretch"
+                                                HorizontalAlignment="Left"
+                                                Margin="5"
+                                                Click="Delete_Click"/>
+
+
                                     <!-- Original Image -->
                                     <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
-                                           Height="{Binding ElementName=SizeSlider, Path=Value}"
-                                           Source="{Binding OriginalImage}"
-                                           Margin="5"/>
+                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
+                                            Source="{Binding OriginalImage}"
+                                            Margin="5"/>
+
+
+
 
                                     <!-- Caption Image -->
                                     <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
-                                           Source="{Binding CaptionImage}"
-                                           Margin="5"/>
+                                           Source="{Binding CaptionImage}"/>
 
                                     <!-- TextBox next to the images -->
                                     <TextBox Width="{Binding ElementName=SizeSlider, Path=Value}"
@@ -44,6 +61,8 @@
                                              VerticalAlignment="Center" 
                                              HorizontalAlignment="Center"
                                              LostFocus="CaptionTextBox_LostFocus"/>
+
+
                                 </StackPanel>
                             </Border>
                         </DataTemplate>
@@ -51,7 +70,5 @@
                 </ItemsControl>
             </ScrollViewer>
         </Grid>
-
-        
     </Grid>
 </Window>
