@@ -3103,7 +3103,12 @@ class BKGetNextImgWOCaption:
         return {
             "required": {
                 "folder_path": ("STRING", {"default": "","tooltip": "The absolute path of the folder you wish to search through. (Can be anywhere.)"}),
+            },
+            "optional": {
+                "default_prompt" : ("STRING",),
+                "update_prompt" : ("STRING",),
             }
+             
         }
     
     
@@ -3111,12 +3116,20 @@ class BKGetNextImgWOCaption:
     def IS_CHANGED(self, folder_path):
         return float("nan")
     
-    RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("filename","folder_path", "extension", "remaining", "status",)
+    RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("filename","folder_path", "extension", "remaining", "status", "system_prompt")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Get Next Img WO Caption"  # Default label text
     OUTPUT_NODE = True
+
+    #TODO: have an optional input for a "UPDATE" System prompt
+    #TODO: have a optional option for a "NORMAL" System prompt
+    #TODO: make an output for a system prompt
+    #TODO: If the normal system prompt is connected and no update prompt it always outputs the normal system prompt
+    #TODO: If neither system prompt is connected it outputs an empty string
+    #TODO: If the update system prompt is connected it will see if a "NAME.capupdate" file exists for the "NAME.txt" file. IF SO, it will replace the <TAG> in the UPDATE system prompt with the contents of the "NAME.capupdate" file, and if the file not exist, it will default to the connected NORMAL system prompt. And if no NORMAL system prompt is connected, it will return an empty string
+
 
     def process(self, folder_path):
         # List of image file extensions we are interested in
@@ -3153,7 +3166,7 @@ class BKGetNextImgWOCaption:
             return (base_name, folder_path, extension, remaining, status)
         
         # If all images have corresponding .txt files
-        return ("All images have captions, no missing captions found.", folder_path, "", 0, "All images have captions, no missing captions found.")
+        raise FileNotFoundError("All images have captions, no missing captions found.")
         
    
 
