@@ -3096,6 +3096,9 @@ class BKRemoveMaskAtIdxSAM3:
 class BKGetNextImgWOCaption:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
+        self.update_cap_extension = ".updatecap"
+        self.update_complete_extension = ".updatecomplete"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3103,17 +3106,21 @@ class BKGetNextImgWOCaption:
         return {
             "required": {
                 "folder_path": ("STRING", {"default": "","tooltip": "The absolute path of the folder you wish to search through. (Can be anywhere.)"}),
+                "update_prompt_tag": ("STRING",),
+                "mode": (["Delete Prompt Update File", "Rename Prompt Update File"],{"default":"Rename Prompt Update File"}),
+                "caption_tag": ("STRING",),
             },
             "optional": {
                 "default_prompt" : ("STRING",),
                 "update_prompt" : ("STRING",),
+                
             }
              
         }
     
     
     @classmethod
-    def IS_CHANGED(self, folder_path):
+    def IS_CHANGED(self, folder_path, update_prompt_tag, mode, caption_tag, default_prompt = "", update_prompt = ""):
         return float("nan")
     
     RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING","STRING",)  # This specifies that the output will be text
@@ -3131,43 +3138,93 @@ class BKGetNextImgWOCaption:
     #TODO: If the update system prompt is connected it will see if a "NAME.capupdate" file exists for the "NAME.txt" file. IF SO, it will replace the <TAG> in the UPDATE system prompt with the contents of the "NAME.capupdate" file, and if the file not exist, it will default to the connected NORMAL system prompt. And if no NORMAL system prompt is connected, it will return an empty string
 
 
-    def process(self, folder_path):
+    def process(self, folder_path, update_prompt_tag,caption_tag, mode, default_prompt = "", update_prompt = ""):
         # List of image file extensions we are interested in
-        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
+        
+        system_prompt = default_prompt
         
         # List to store image file names
-        images = []
         images_missing_txt = []
+        prompts_to_update = []
         
         # Loop through the folder and get all image files
         for file in os.listdir(folder_path):
-            file_name, file_extension = os.path.splitext(file)
-            # Check if the file is an image based on its extension
-            if file_extension.lower() in image_extensions:
-                images.append(file)
-                # Check if the corresponding .txt file exists
-                txt_file = os.path.join(folder_path, f"{file_name}.txt")
+            filename_wo_ext, file_extension = os.path.splitext(file)
+            # it we found an image in the folder
+            if file_extension.lower() in self.image_extensions:
+                
+                txt_file = os.path.join(folder_path, f"{filename_wo_ext}.txt")
+                capupdate_file = os.path.join(folder_path, f"{filename_wo_ext}.{self.update_cap_extension}")
                 if not os.path.exists(txt_file):
+                    # if the file exists, but not the txt file
                     images_missing_txt.append(file)
+                elif os. path.exists(capupdate_file):
+                    # if the image exists, and the txt file exists, and the capupdate file exists
+                    prompts_to_update.append([filename_wo_ext, file_extension])
+
+
+
         
         # If no images are found, raise an error
-        if not images:
-            raise ValueError("No image files found in the specified folder.")
+        if not images_missing_txt and not prompts_to_update:
+            raise FileNotFoundError("No image files found in the specified folder.")
         
         # If there are images without corresponding .txt files
         if images_missing_txt:
             # Get the first image without a corresponding .txt file
             first_missing_image = images_missing_txt[0]
-            base_name, extension = os.path.splitext(first_missing_image)
-            remaining = len(images_missing_txt)
+            filename_wo_ext, extension = os.path.splitext(first_missing_image)
+            remaining = len(images_missing_txt) + len(prompts_to_update)
             # Create the status message
             current_time = datetime.now().strftime('%I:%M:%S %p')
-            status = f"Processing [{base_name}] with [{remaining}] remaining. [{current_time}]"
-            return (base_name, folder_path, extension, remaining, status)
+            status = f"Processing [{filename_wo_ext}] with [{remaining}] remaining. [{current_time}]"
+            return (filename_wo_ext, folder_path, extension, remaining, status, system_prompt)
         
+        if prompts_to_update and update_prompt:
+            base_name, img_ext = prompts_to_update[0]
+            base_path = os.path.join(folder_path, base_name)
+            update_file_path = f"{base_path}.{self.update_cap_extension}"
+            completed_file_path = f"{base_path}.{self.update_complete_extension}"
+            caption_contents = self.read_text_file_contents(f"{base_path}.txt")
+            update_contents = self.read_text_file_contents(update_file_path)
+            system_prompt = update_prompt
+            
+            if update_prompt_tag:
+                system_prompt = system_prompt.replace(update_prompt_tag, update_contents)
+            
+            if caption_tag:
+                system_prompt = system_prompt.replace(caption_tag, caption_contents)
+
+
+            if mode == "Rename Prompt Update File":
+                print(f"Renaming file [{update_file_path}] to [{completed_file_path}]")
+                os.rename(update_file_path, completed_file_path)
+            elif mode == "Delete Prompt Update File":
+                print(f"Deleting file [{update_file_path}]")
+                os.remove(update_file_path)
+            else:
+                raise ValueError(f"Unknown mode: [{mode}]")
+            
+            return (filename_wo_ext, folder_path, extension, remaining, status, system_prompt)
+
         # If all images have corresponding .txt files
-        raise FileNotFoundError("All images have captions, no missing captions found.")
-        
+        raise FileNotFoundError("All images have captions, no missing captions found, and all prompts updated")
+    
+    def read_text_file_contents(self, filepath):
+        all_text = ""
+        try:
+            # Try opening the file with UTF-8 encoding
+            with open(filepath, 'r', encoding='utf-8-sig') as file:
+                all_text += file.read().strip() + "\n"
+        except UnicodeDecodeError:
+            # Fallback to a more lenient encoding
+            with open(filepath, 'r', encoding='latin1') as file:
+                all_text += file.read().strip() + "\n"
+        except FileNotFoundError:
+            raise ValueError(f"The file at '{filepath}' was not found.")
+        except Exception as e:
+            raise ValueError(f"An error occurred while reading the file '{filepath}': {e}")
+        return all_text
    
 
 class BKLoopPathBuilder:
