@@ -4178,6 +4178,12 @@ class BKDynamicCheckpointsList:
     def IS_CHANGED(self, cfg, sampler_name, select, names=None, extra_pnginfo=None):
         return float("nan")
 
+    def parse_text_to_list_of_lines(self, text):
+        return [n.strip() for n in text.splitlines() if n.strip()]
+    
+    def remove_duplicates_in_list(self, list):
+        seen = set()
+        return [item for item in list if not (item in seen or seen.add(item))]
     
     def process(self, default_cfg, default_sampler, select, names=None, extra_pnginfo=None):
         filtered_checkpoints = []
@@ -4190,7 +4196,7 @@ class BKDynamicCheckpointsList:
             filtered_checkpoints = all_checkpoints
         else:
             # Split the names string by lines and strip whitespace
-            name_filters = [n.strip() for n in names.splitlines() if n.strip()]
+            name_filters = self.parse_text_to_list_of_lines(names)
             
             # Process each name filter to handle both formats
             for checkpoint in all_checkpoints:
@@ -4235,10 +4241,15 @@ class BKDynamicCheckpointsList:
 
         # Sort the list alphabetically (case-insensitive)
         filtered_checkpoints.sort(key=str.lower)
-
-        checkpoint_list_text = ""
+        unique_checkpoint_names_list = []
         for checkpoint in filtered_checkpoints:
-            checkpoint_list_text += f"{checkpoint}\n"
+            unique_checkpoint_names_list.append(os.path.basename(checkpoint))
+
+        unique_checkpoint_names_list = self.remove_duplicates_in_list(unique_checkpoint_names_list)
+        
+        checkpoint_list_text = ""
+        for unique_name in unique_checkpoint_names_list:
+            checkpoint_list_text += f"{unique_name}\n"
 
         # Select a checkpoint based on the seed (rolls over if too large)
         idx = select % len(filtered_checkpoints)
