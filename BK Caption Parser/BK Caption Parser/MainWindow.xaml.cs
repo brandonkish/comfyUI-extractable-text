@@ -1,8 +1,10 @@
 ﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace BK_Caption_Parser
 {
@@ -28,87 +30,60 @@ namespace BK_Caption_Parser
             ReloadFolder();
         }
 
-        private void ReloadFolder()
+        void ReloadFolder()
         {
-
             ImageSets.Clear();
             foreach (var set in FolderParser.Parse(currentFolder))
             {
-                // Use ImageLoader to load images for the set
-                set.OriginalImage = ImageLoader.LoadImage(set.OriginalImagePath);
-                set.CaptionImage = ImageLoader.LoadImage(set.CaptionImagePath);
+                // Check if an .updatecap file exists and load its content if available
+                var baseName = Path.GetFileNameWithoutExtension(set.CaptionTextPath);
+                var updateCapFilePath = Path.Combine(Path.GetDirectoryName(set.CaptionTextPath), baseName + ".updatecap");
 
-                // Add the set to the collection
+                if (File.Exists(updateCapFilePath))
+                {
+                    // Load the .updatecap file content into the CaptionChangeText property
+                    set.CaptionChangeText = File.ReadAllText(updateCapFilePath);
+                }
+                else
+                {
+                    // If no .updatecap file, set the text to empty
+                    set.CaptionChangeText = string.Empty;
+                }
+
                 ImageSets.Add(set);
             }
         }
 
-        private void ImageSet_Clicked(object sender, RoutedEventArgs e)
-        {
-            SelectedSet = (sender as FrameworkElement)?.DataContext as ImageSet;
-            ListViewGrid.Visibility = Visibility.Collapsed;
-            EditViewGrid.Visibility = Visibility.Visible;
-            DataContext = this;
-        }
 
-        private void Back_Click(object? sender, RoutedEventArgs? e)
+        private void CaptionTextBox_LostFocus(object sender, RoutedEventArgs e)
         {
-            SaveCaptionChange();
-            EditViewGrid.Visibility = Visibility.Collapsed;
-            ListViewGrid.Visibility = Visibility.Visible;
-            ReloadFolder();
-        }
+            var textBox = sender as TextBox;
+            var imageSet = (textBox?.DataContext as ImageSet);  // Bind to ImageSet in DataContext
 
-        private void SaveCaptionChange()
-        {
-            if (!string.IsNullOrWhiteSpace(SelectedSet?.CaptionChangeText))
+            if (imageSet == null) return;
+
+            var baseName = Path.GetFileNameWithoutExtension(imageSet.CaptionTextPath);
+            var updateCapFilePath = Path.Combine(Path.GetDirectoryName(imageSet.CaptionTextPath), baseName + ".updatecap");
+
+            if (string.IsNullOrWhiteSpace(textBox.Text))
             {
-                var baseName = Path.GetFileNameWithoutExtension(SelectedSet.CaptionTextPath);
-
-                if(SelectedSet.FolderPath is null)
+                // If the TextBox is empty, delete the .updatecap file if it exists
+                if (File.Exists(updateCapFilePath))
                 {
-                    Debug.WriteLine("SelectedSet.FolderPath is null when trying to SaveCaptionChange. Failed to save the Caption Change.");
-                    return;
+                    File.Delete(updateCapFilePath);
+                    Debug.WriteLine($"Deleted {updateCapFilePath}");
                 }
-
-                File.WriteAllText(
-                    Path.Combine(SelectedSet.FolderPath, baseName + ".capchange"),
-                    SelectedSet.CaptionChangeText);
+            }
+            else
+            {
+                // Otherwise, save the text to the .updatecap file
+                File.WriteAllText(updateCapFilePath, textBox.Text, Encoding.UTF8);
+                Debug.WriteLine($"Saved {updateCapFilePath} with text: {textBox.Text}");
             }
         }
 
-        private void Delete_Click(object sender, RoutedEventArgs e)
-        {
-            if (MessageBox.Show(
-                "Are you sure you want to delete all files including the original image?",
-                "Confirm",
-                MessageBoxButton.YesNo) != MessageBoxResult.Yes)
-                return;
 
-            if (SelectedSet is null)
-            {
-                Debug.WriteLine("SelectedSet is null when trying to Delete the files. Failed to delete set.");
-                return;
-            }
 
-            foreach (var path in new[] {
-                SelectedSet.CaptionTextPath,
-                SelectedSet.OriginalImagePath,
-                SelectedSet.CaptionImagePath
-            })
-            {
-                if (File.Exists(path)) File.Delete(path);
-            }
-
-            // Renumber last set to deleted set number
-            var last = ImageSets[^1];
-            if (last != SelectedSet)
-            {
-                RenameSet(last, SelectedSet.SetNumber);
-            }
-
-            Back_Click(null, null);
-        }
 
         private void RenameSet(ImageSet set, int newNumber)
         {

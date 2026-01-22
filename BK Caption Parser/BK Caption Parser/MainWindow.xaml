@@ -23,9 +23,7 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Border BorderThickness="1" Margin="5">
-                                <StackPanel Orientation="Horizontal"
-                                            MouseLeftButtonUp="ImageSet_Clicked">
-
+                                <StackPanel Orientation="Horizontal">
                                     <!-- Original Image -->
                                     <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
@@ -37,6 +35,15 @@
                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
                                            Source="{Binding CaptionImage}"
                                            Margin="5"/>
+
+                                    <!-- TextBox next to the images -->
+                                    <TextBox Width="{Binding ElementName=SizeSlider, Path=Value}"
+                                             Height="{Binding ElementName=SizeSlider, Path=Value}"
+                                             Text="{Binding CaptionText, Mode=TwoWay}" 
+                                             Margin="5" 
+                                             VerticalAlignment="Center" 
+                                             HorizontalAlignment="Center"
+                                             LostFocus="CaptionTextBox_LostFocus"/>
                                 </StackPanel>
                             </Border>
                         </DataTemplate>
@@ -58,11 +65,9 @@
                         Background="Red"
                         Foreground="White"
                         DockPanel.Dock="Left"
-                        Click="Delete_Click"
                         Padding="10"/>
                 <Button Content="Back"
                         DockPanel.Dock="Right"
-                        Click="Back_Click"
                         Padding="10"/>
             </DockPanel>
 
