@@ -1,59 +1,90 @@
 ﻿<Window x:Class="BK_Caption_Parser.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Image Caption Viewer" Height="800" Width="1000" AllowDrop="True" Drop="Window_Drop">
-    <Window.Resources>
-        <!-- Define a DataTemplate for displaying the image set rows -->
-        <DataTemplate x:Key="SetRowTemplate">
-            <Grid HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
-                <!-- Define three equal-width columns -->
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <!-- Original Image -->
-                <Image Grid.Column="0" Source="{Binding OriginalImage}" Stretch="UniformToFill" VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
-
-                <!-- Caption Image -->
-                <Image Grid.Column="1" Source="{Binding CaptionImage}" Stretch="UniformToFill" VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
-
-                <!-- Caption Text -->
-                <TextBox Grid.Column="2" Text="{Binding CaptionText}" IsReadOnly="True" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Margin="5" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
-            </Grid>
-        </DataTemplate>
-    </Window.Resources>
+        AllowDrop="True"
+        Drop="Window_Drop"
+        Title="Image Set Editor" Width="1200" Height="800">
 
     <Grid>
-        <!-- ListView to show image sets -->
-        <ListView Name="SetsListView" Margin="10" AllowDrop="True" 
-                  HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                  ItemTemplate="{StaticResource SetRowTemplate}" 
-                  MouseDoubleClick="SetRow_MouseDoubleClick" />
-
-        <!-- Enlarged View Panel -->
-        <Grid Name="EnlargedViewPanel" Visibility="Collapsed" Margin="10">
+        <!-- LIST VIEW -->
+        <Grid x:Name="ListViewGrid">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition/>
+            </Grid.RowDefinitions>
+
+            <Slider x:Name="SizeSlider"
+                    Minimum="100" Maximum="400"
+                    Value="200"
+                    Margin="10"/>
+
+            <ScrollViewer Grid.Row="1">
+                <ItemsControl ItemsSource="{Binding ImageSets}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderThickness="1" Margin="5">
+                                <StackPanel Orientation="Horizontal"
+                                            MouseLeftButtonUp="ImageSet_Clicked">
+
+                                    <!-- Original Image -->
+                                    <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
+                                           Height="{Binding ElementName=SizeSlider, Path=Value}"
+                                           Source="{Binding OriginalImage}"
+                                           Margin="5"/>
+
+                                    <!-- Caption Image -->
+                                    <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
+                                           Height="{Binding ElementName=SizeSlider, Path=Value}"
+                                           Source="{Binding CaptionImage}"
+                                           Margin="5"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- EDIT VIEW -->
+        <Grid x:Name="EditViewGrid" Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Button Name="DeleteCaptionButton" Content="Delete Caption" Grid.Row="0" HorizontalAlignment="Right" Click="DeleteCaptionButton_Click"/>
-            <Button Name="DeleteAllButton" Content="Delete All" Grid.Row="0" HorizontalAlignment="Left" Click="DeleteAllButton_Click"/>
+            <DockPanel>
+                <Button Content="DELETE"
+                        Background="Red"
+                        Foreground="White"
+                        DockPanel.Dock="Left"
+                        Click="Delete_Click"
+                        Padding="10"/>
+                <Button Content="Back"
+                        DockPanel.Dock="Right"
+                        Click="Back_Click"
+                        Padding="10"/>
+            </DockPanel>
 
-            <!-- Original Image -->
-            <Image Name="OriginalImageEnlarged" VerticalAlignment="Top" HorizontalAlignment="Left" Stretch="UniformToFill"/>
+            <StackPanel Grid.Row="1" Orientation="Horizontal">
+                <!-- Original Image in Edit View -->
+                <Image Width="400" Height="400" Source="{Binding SelectedSet.OriginalImage}"/>
+                <!-- Caption Image in Edit View -->
+                <Image Width="400" Height="400" Source="{Binding SelectedSet.CaptionImage}"/>
+            </StackPanel>
 
-            <!-- Caption Image -->
-            <Image Name="CaptionImageEnlarged" VerticalAlignment="Top" HorizontalAlignment="Right" Stretch="UniformToFill"/>
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                </Grid.ColumnDefinitions>
 
-            <!-- Caption Text Box -->
-            <TextBox Name="CaptionTextBoxEnlarged" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Height="100" IsReadOnly="False" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
-
-            <!-- Save Button -->
-            <Button Name="SaveButton" Content="Save" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="10" Click="SaveButton_Click"/>
+                <TextBox Text="{Binding SelectedSet.CaptionText}" AcceptsReturn="True"/>
+                <StackPanel Grid.Column="1">
+                    <Label Content="Change the caption so that..."/>
+                    <TextBox Text="{Binding SelectedSet.CaptionChangeText}"/>
+                </StackPanel>
+            </Grid>
         </Grid>
     </Grid>
 </Window>

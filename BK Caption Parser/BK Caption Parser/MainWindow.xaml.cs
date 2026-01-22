@@ -1,164 +1,140 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
-using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media.Imaging;
 
 namespace BK_Caption_Parser
 {
     public partial class MainWindow : Window
     {
-        private string currentFolder;
-        private List<ImageSet> imageSets;
-        private Dictionary<string, (string originalImage, string captionText, string captionImage)> fileHashes;
+        public ObservableCollection<ImageSet> ImageSets { get; } = new();
+        public ImageSet? SelectedSet { get; set; }
+        string? currentFolder;
 
         public MainWindow()
         {
             InitializeComponent();
-            imageSets = new List<ImageSet>();
-            fileHashes = new Dictionary<string, (string, string, string)>();
+            DataContext = this;
         }
 
-        // Handle drag-and-drop for the window
         private void Window_Drop(object sender, DragEventArgs e)
         {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop))
-            {
-                string[] droppedFiles = (string[])e.Data.GetData(DataFormats.FileDrop);
-                string droppedFile = droppedFiles.FirstOrDefault();
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
 
-                if (!string.IsNullOrEmpty(droppedFile))
+            var files = (string[])e.Data.GetData(DataFormats.FileDrop);
+            currentFolder = Path.GetDirectoryName(files[0]);
+
+            ReloadFolder();
+        }
+
+        private void ReloadFolder()
+        {
+
+            ImageSets.Clear();
+            foreach (var set in FolderParser.Parse(currentFolder))
+            {
+                // Use ImageLoader to load images for the set
+                set.OriginalImage = ImageLoader.LoadImage(set.OriginalImagePath);
+                set.CaptionImage = ImageLoader.LoadImage(set.CaptionImagePath);
+
+                // Add the set to the collection
+                ImageSets.Add(set);
+            }
+        }
+
+        private void ImageSet_Clicked(object sender, RoutedEventArgs e)
+        {
+            SelectedSet = (sender as FrameworkElement)?.DataContext as ImageSet;
+            ListViewGrid.Visibility = Visibility.Collapsed;
+            EditViewGrid.Visibility = Visibility.Visible;
+            DataContext = this;
+        }
+
+        private void Back_Click(object? sender, RoutedEventArgs? e)
+        {
+            SaveCaptionChange();
+            EditViewGrid.Visibility = Visibility.Collapsed;
+            ListViewGrid.Visibility = Visibility.Visible;
+            ReloadFolder();
+        }
+
+        private void SaveCaptionChange()
+        {
+            if (!string.IsNullOrWhiteSpace(SelectedSet?.CaptionChangeText))
+            {
+                var baseName = Path.GetFileNameWithoutExtension(SelectedSet.CaptionTextPath);
+
+                if(SelectedSet.FolderPath is null)
                 {
-                    string folderPath = Path.GetDirectoryName(droppedFile);
-                    currentFolder = folderPath;
-                    ParseFolder(folderPath);
+                    Debug.WriteLine("SelectedSet.FolderPath is null when trying to SaveCaptionChange. Failed to save the Caption Change.");
+                    return;
                 }
+
+                File.WriteAllText(
+                    Path.Combine(SelectedSet.FolderPath, baseName + ".capchange"),
+                    SelectedSet.CaptionChangeText);
             }
         }
 
-        // Parse folder for image sets and display in ListView
-        private void ParseFolder(string folderPath)
+        private void Delete_Click(object sender, RoutedEventArgs e)
         {
-            var textFiles = Directory.GetFiles(folderPath, "*.txt");
-            var allFiles = Directory.GetFiles(folderPath);
+            if (MessageBox.Show(
+                "Are you sure you want to delete all files including the original image?",
+                "Confirm",
+                MessageBoxButton.YesNo) != MessageBoxResult.Yes)
+                return;
 
-            imageSets.Clear(); // Clear previous data
-            fileHashes.Clear();
-
-            foreach (var textFile in textFiles)
+            if (SelectedSet is null)
             {
-                string baseName = Path.GetFileNameWithoutExtension(textFile);
-                string originalImage = allFiles.FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == baseName && f.EndsWith(".png"));
-                string captionImage = allFiles.FirstOrDefault(f => Path.GetFileNameWithoutExtension(f).StartsWith(baseName) && f.EndsWith(".png"));
-
-                if (originalImage != null && captionImage != null)
-                {
-                    string captionText = File.Exists(textFile) ? File.ReadAllText(textFile) : "No caption available";
-
-                    // Add the image set to the list
-                    imageSets.Add(new ImageSet
-                    {
-                        OriginalImage = new BitmapImage(new Uri(originalImage)),
-                        CaptionImage = new BitmapImage(new Uri(captionImage)),
-                        CaptionText = captionText
-                    });
-
-                    // Store hashes for future processing
-                    fileHashes[baseName] = (originalImage, textFile, captionImage);
-                }
+                Debug.WriteLine("SelectedSet is null when trying to Delete the files. Failed to delete set.");
+                return;
             }
 
-            // Display in ListView
-            SetsListView.ItemsSource = imageSets;
+            foreach (var path in new[] {
+                SelectedSet.CaptionTextPath,
+                SelectedSet.OriginalImagePath,
+                SelectedSet.CaptionImagePath
+            })
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+
+            // Renumber last set to deleted set number
+            var last = ImageSets[^1];
+            if (last != SelectedSet)
+            {
+                RenameSet(last, SelectedSet.SetNumber);
+            }
+
+            Back_Click(null, null);
         }
 
-        // Click to expand a row in the list to "enlarged" view
-        private void SetRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        private void RenameSet(ImageSet set, int newNumber)
         {
-            if (SetsListView.SelectedItem is ImageSet selectedSet)
+            if(set.CaptionTextPath is null)
             {
-                EnlargedViewPanel.Visibility = Visibility.Visible;
-
-                OriginalImageEnlarged.Source = selectedSet.OriginalImage;
-                CaptionImageEnlarged.Source = selectedSet.CaptionImage;
-                CaptionTextBoxEnlarged.Text = selectedSet.CaptionText;
-            }
-        }
-
-        // Delete caption (just removes the caption image and text)
-        private void DeleteCaptionButton_Click(object sender, RoutedEventArgs e)
-        {
-            string baseName = Path.GetFileNameWithoutExtension(OriginalImageEnlarged.Source.ToString());
-            string captionImage = fileHashes[baseName].captionImage;
-            string captionTextFile = fileHashes[baseName].captionText;
-
-            var result = MessageBox.Show("Are you sure you want to delete the caption?", "Delete Caption", MessageBoxButton.YesNo);
-            if (result == MessageBoxResult.Yes)
-            {
-                // Delete caption files
-                if (File.Exists(captionImage)) File.Delete(captionImage);
-                if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
-
-                // Update the UI (set to "No Caption")
-                CaptionImageEnlarged.Source = null;
-                CaptionTextBoxEnlarged.Text = "No Caption Found";
-            }
-        }
-
-        // Delete all (deletes the original, caption, and text files)
-        private void DeleteAllButton_Click(object sender, RoutedEventArgs e)
-        {
-            string baseName = Path.GetFileNameWithoutExtension(OriginalImageEnlarged.Source.ToString());
-            string originalImage = fileHashes[baseName].originalImage;
-            string captionImage = fileHashes[baseName].captionImage;
-            string captionTextFile = fileHashes[baseName].captionText;
-
-            var result = MessageBox.Show("Are you sure you want to delete all files?", "Delete All", MessageBoxButton.YesNo);
-            if (result == MessageBoxResult.Yes)
-            {
-                // Delete all files in the set
-                if (File.Exists(originalImage)) File.Delete(originalImage);
-                if (File.Exists(captionImage)) File.Delete(captionImage);
-                if (File.Exists(captionTextFile)) File.Delete(captionTextFile);
-
-                // Remove from dictionary and ListView
-                fileHashes.Remove(baseName);
-                imageSets.RemoveAll(x => Path.GetFileNameWithoutExtension(x.OriginalImage.UriSource.AbsolutePath) == baseName);
-
-                // Refresh ListView
-                SetsListView.ItemsSource = null;
-                SetsListView.ItemsSource = imageSets;
-            }
-        }
-
-        // Save caption text
-        private void SaveButton_Click(object sender, RoutedEventArgs e)
-        {
-            string baseName = Path.GetFileNameWithoutExtension(OriginalImageEnlarged.Source.ToString());
-            string captionTextFile = fileHashes[baseName].captionText;
-
-            // Allow user to edit caption text
-            string newCaption = CaptionTextBoxEnlarged.Text;
-            File.WriteAllText(captionTextFile, newCaption);
-
-            // Update the caption in memory
-            var selectedSet = imageSets.FirstOrDefault(x => Path.GetFileNameWithoutExtension(x.OriginalImage.UriSource.AbsolutePath) == baseName);
-            if (selectedSet != null)
-            {
-                selectedSet.CaptionText = newCaption;
+                Debug.WriteLine($"set.CaptionTextPath is null when trying to rename the set. newNumber [{newNumber}]");
+                return;
             }
 
-            MessageBox.Show("Caption saved successfully!", "Save Caption", MessageBoxButton.OK);
-        }
-    }
+            string newBase = Regex.Replace(
+                Path.GetFileNameWithoutExtension(set.CaptionTextPath),
+                @"\d+$", newNumber.ToString("D4"));
 
-    public class ImageSet
-    {
-        public BitmapImage OriginalImage { get; set; }
-        public BitmapImage CaptionImage { get; set; }
-        public string CaptionText { get; set; }
+            if (set.FolderPath is null)
+            {
+                Debug.WriteLine("set.FolderPath is null when trying to Rename the set. Failed to rename the set.");
+                return;
+            }
+
+            foreach (var path in Directory.GetFiles(set.FolderPath)
+                         .Where(p => p.Contains(set.SetNumber.ToString())))
+            {
+                File.Move(path,
+                    Path.Combine(set.FolderPath,
+                    newBase + Path.GetExtension(path)));
+            }
+        }
     }
 }
