@@ -72,6 +72,9 @@ namespace BK_Caption_Parser
 
             try
             {
+                // Clear the ImageSource bindings before deletion to avoid file locks
+                ClearImageSourceBindings(imageSet);
+
                 // Delete associated files
                 DeleteFileIfExists(imageSet.CaptionTextPath);
                 DeleteFileIfExists(imageSet.OriginalImagePath);
@@ -88,6 +91,47 @@ namespace BK_Caption_Parser
             {
                 MessageBox.Show($"Error deleting files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+
+            // Renumber last set to deleted set number
+            var last = ImageSets[^1];
+            if (last != SelectedSet)
+            {
+                RenameSet(last, SelectedSet.SetNumber);
+            }
+        }
+
+        private void ClearImageSourceBindings(ImageSet imageSet)
+        {
+            // Clear the ImageSource references to avoid file locks
+            if (imageSet.OriginalImage != null)
+            {
+                // Nullifying the image source to release the file lock
+                imageSet.OriginalImage = null;
+            }
+
+            if (imageSet.CaptionImage != null)
+            {
+                // Nullifying the caption image source to release the file lock
+                imageSet.CaptionImage = null;
+            }
+
+            Debug.WriteLine("Cleared image references.");
+        }
+
+
+        void RenameSet(ImageSet set, int newNumber)
+        {
+            string newBase = Regex.Replace(
+                Path.GetFileNameWithoutExtension(set.CaptionTextPath),
+                @"\d+$", newNumber.ToString("D4"));
+
+            foreach (var path in Directory.GetFiles(set.FolderPath)
+                         .Where(p => p.Contains(set.SetNumber.ToString())))
+            {
+                File.Move(path,
+                    Path.Combine(set.FolderPath,
+                    newBase + Path.GetExtension(path)));
+            }
         }
 
         private void DeleteFileIfExists(string filePath)
@@ -98,6 +142,8 @@ namespace BK_Caption_Parser
                 Debug.WriteLine($"Deleted: {filePath}");
             }
         }
+
+
 
 
 
@@ -128,34 +174,5 @@ namespace BK_Caption_Parser
             }
         }
 
-
-
-
-        private void RenameSet(ImageSet set, int newNumber)
-        {
-            if(set.CaptionTextPath is null)
-            {
-                Debug.WriteLine($"set.CaptionTextPath is null when trying to rename the set. newNumber [{newNumber}]");
-                return;
-            }
-
-            string newBase = Regex.Replace(
-                Path.GetFileNameWithoutExtension(set.CaptionTextPath),
-                @"\d+$", newNumber.ToString("D4"));
-
-            if (set.FolderPath is null)
-            {
-                Debug.WriteLine("set.FolderPath is null when trying to Rename the set. Failed to rename the set.");
-                return;
-            }
-
-            foreach (var path in Directory.GetFiles(set.FolderPath)
-                         .Where(p => p.Contains(set.SetNumber.ToString())))
-            {
-                File.Move(path,
-                    Path.Combine(set.FolderPath,
-                    newBase + Path.GetExtension(path)));
-            }
-        }
     }
 }

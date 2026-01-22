@@ -1,9 +1,15 @@
 ﻿<Window x:Class="BK_Caption_Parser.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:BK_Caption_Parser"
         AllowDrop="True"
         Drop="Window_Drop"
         Title="Image Set Editor" Width="1200" Height="800">
+
+    <!-- Register the BitmapImageConverter -->
+    <Window.Resources>
+        <local:BitmapImageConverter x:Key="BitmapImageConverter"/>
+    </Window.Resources>
 
     <Grid>
         <!-- LIST VIEW -->
@@ -24,34 +30,27 @@
                         <DataTemplate>
                             <Border BorderThickness="1" Margin="5">
                                 <StackPanel Orientation="Horizontal">
-                                    <!-- Grid to contain Image and Button -->
 
-                                    <!-- Delete Button below the Image -->
                                     <Button Content="Delete"
                                                 Width="75"
-                                                
                                                 Background="Red"
                                                 Foreground="White"
-                                                Grid.Row="1"
                                                 VerticalAlignment="Stretch"
                                                 HorizontalAlignment="Left"
                                                 Margin="5"
                                                 Click="Delete_Click"/>
-
-
+                                    
                                     <!-- Original Image -->
                                     <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
-                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
-                                            Source="{Binding OriginalImage}"
-                                            Margin="5"/>
-
-
-
+                                           Height="{Binding ElementName=SizeSlider, Path=Value}"
+                                           Source="{Binding OriginalImage, Converter={StaticResource BitmapImageConverter}}"
+                                           Margin="5"/>
 
                                     <!-- Caption Image -->
                                     <Image Width="{Binding ElementName=SizeSlider, Path=Value}"
                                            Height="{Binding ElementName=SizeSlider, Path=Value}"
-                                           Source="{Binding CaptionImage}"/>
+                                           Source="{Binding CaptionImage, Converter={StaticResource BitmapImageConverter}}"
+                                           Margin="5"/>
 
                                     <!-- TextBox next to the images -->
                                     <TextBox Width="{Binding ElementName=SizeSlider, Path=Value}"
@@ -61,8 +60,6 @@
                                              VerticalAlignment="Center" 
                                              HorizontalAlignment="Center"
                                              LostFocus="CaptionTextBox_LostFocus"/>
-
-
                                 </StackPanel>
                             </Border>
                         </DataTemplate>
