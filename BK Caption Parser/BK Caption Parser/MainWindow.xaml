@@ -39,7 +39,7 @@
                                     <!-- TextBox next to the images -->
                                     <TextBox Width="{Binding ElementName=SizeSlider, Path=Value}"
                                              Height="{Binding ElementName=SizeSlider, Path=Value}"
-                                             Text="{Binding CaptionText, Mode=TwoWay}" 
+                                             Text="{Binding CaptionChangeText, Mode=TwoWay}" 
                                              Margin="5" 
                                              VerticalAlignment="Center" 
                                              HorizontalAlignment="Center"
