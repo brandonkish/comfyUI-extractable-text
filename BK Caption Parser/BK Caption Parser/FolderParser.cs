@@ -13,6 +13,8 @@ public static class FolderParser
 
     static Regex numberCheckRegex = new Regex(@"(\d+)");
 
+    static string captionImageExt = ".capimg";
+
     public static bool CompareStrings(string? str1, string? str2)
     {
         if (string.IsNullOrEmpty(str1) || string.IsNullOrEmpty(str2))
@@ -86,7 +88,7 @@ public static class FolderParser
 
             if (baseName == null) continue;
 
-            var supportedExtensions = new[] { ".png", ".jpeg", ".jpg", ".bmp", ".gif", ".tiff" };  // Add all supported image extensions
+            var supportedExtensions = new[] { ".png", ".jpeg", ".jpg", ".bmp", ".gif", ".tiff", captionImageExt };  // Add all supported image extensions
             var images = Directory.GetFiles(folder)
                 .Where(f => f.StartsWith(Path.Combine(folder, baseName)) &&
                             supportedExtensions.Contains(Path.GetExtension(f).ToLower()))
@@ -96,16 +98,13 @@ public static class FolderParser
 
             // Find the Original Image (exact match based on base name with number suffix)
             set.OriginalImagePath = images.FirstOrDefault(i =>
-                Path.GetFileNameWithoutExtension(i) == baseName);
+                Path.GetFileNameWithoutExtension(i) == baseName && IsNotCaptionImage(i, baseName));
 
             Debug.WriteLine($"OriginalImagePath [{set.OriginalImagePath}]");
 
             // Find the Caption Image (matching based on the same base name but a different number suffix)
             set.CaptionImagePath = images.FirstOrDefault(i =>
-                i != set.OriginalImagePath &&
-                Path.GetFileNameWithoutExtension(i).StartsWith(baseName) &&
-                !Path.GetFileNameWithoutExtension(i).EndsWith(baseName.Split('_').Last()) &&
-                CompareStrings(i, set.OriginalImagePath)); // Ensure different number suffix
+                Path.GetFileName(i) == $"{baseName}{captionImageExt}");
 
             Debug.WriteLine($"CaptionImagePath [{set.CaptionImagePath}]");
 
@@ -120,6 +119,11 @@ public static class FolderParser
         }
 
         return sets.Values.OrderBy(s => s.SetNumber).ToList();
+    }
+
+    private static bool IsNotCaptionImage(string i, string baseName)
+    {
+        return Path.GetFileName(i) != $"{baseName}{captionImageExt}";
     }
 
     static BitmapImage LoadOrPlaceholder(string? path)
