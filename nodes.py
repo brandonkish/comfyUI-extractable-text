@@ -2358,6 +2358,119 @@ class BKFileSelectNextMissing:
 
         # Return the requested information
         return (filename, source_path, extension, full_path, (total_files_found - 1), file_list, file_list_w_idx, status, dest_path)
+
+
+########################################################################################################################################
+# BK GET NEXT MISSING CAPTION IMAGE
+########################################################################################################################################
+
+class BKGetNextMissingCaptionImage:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.caption_image_extension = ".capimg"
+        self.caption_txt_file_ext = ".txt"
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "caption_folder": ("STRING", {"default": "","tooltip": "The source path is the relative path to the folder with the files you wish to modify. Can use absolute or relative path, if relative, starts in output folder."}),
+                
+            }
+        }
+    
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING","INT","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("caption_text", "caption_image_filename", "caption_folder", "caption_image_extension", "caption_image_full_path", "num_of_missing_caption_images", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Get Next Missing Caption Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, caption_folder):
+        return float("nan")
+
+    def process(self, caption_folder):
+
+        caption_folder = caption_folder.strip()
+
+        # Check if the provided path is absolute or relative
+        if not os.path.isabs(caption_folder):
+            # If relative, construct the path with the output directory
+            caption_folder = f"{self.output_dir.strip("\\").strip()}\\{caption_folder}".strip()
+
+        if not os.path.exists(caption_folder.strip()):
+            raise NotADirectoryError(f"Caption folder not found [{caption_folder}].")
+
+
+        all_caption_images = self.get_lowered_base_names_of_files_in_folder_by_ext(caption_folder, self.caption_image_extension)
+        all_caption_txt_files = self.get_lowered_base_names_of_files_in_folder_by_ext(caption_folder, self.caption_txt_file_ext)
+
+        if len(all_caption_txt_files) == 0:
+            raise FileNotFoundError(f"No caption text files found in folder [{caption_folder}].")
+
+        self.print_debug("============ ALL CAPTION IMAGES ==================")
+        for image in all_caption_images:
+            self.print_debug(f"CAPTION IMAGE: [{image}]")
+
+        self.print_debug("============ ALL CAPTION TEXTS ==================")
+        for text in all_caption_txt_files:
+            self.print_debug(f"CAPTION TEXT: [{text}]")    
+
+        all_missing_caption_images = []
+
+        for caption_txt_file in all_caption_txt_files:
+            if not caption_txt_file in all_caption_images:
+                all_missing_caption_images.append(caption_txt_file)
+
+        num_of_missing_caption_images = len(all_missing_caption_images)
+
+        if num_of_missing_caption_images == 0:
+            raise FileNotFoundError(f"No missing caption images found. All caption txt files have caption images!")
+        
+        all_missing_caption_images.sort()
+        next_missing_caption_image_name = all_missing_caption_images[0]
+
+
+        caption_image_full_path = f"{caption_folder.strip()}\\{next_missing_caption_image_name.strip()}{self.caption_image_extension}"
+        caption_text_full_path = f"{caption_folder.strip()}\\{next_missing_caption_image_name.strip()}{self.caption_txt_file_ext}"
+        caption_text = self.read_text_file(caption_text_full_path)
+
+
+        current_time = datetime.now().strftime('%I:%M:%S %p')
+        status = f"Processing [{next_missing_caption_image_name}] {num_of_missing_caption_images - 1} remaining. [{current_time}]"
+
+        
+
+        # Return the requested information
+        return (caption_text, next_missing_caption_image_name, caption_folder, self.caption_image_extension, caption_image_full_path, (num_of_missing_caption_images - 1), status)
+    
+    def get_lowered_base_names_of_files_in_folder_by_ext(self, folder, extension):
+        """ Returns a list of all files found in the folder with the specified extension. Files names are returned without extension and in lower case for ease of comparison"""
+        # List all files in the directory
+        files = os.listdir(folder)
+
+
+        self.print_debug("============================FILES===========================")
+        for file in files:
+            self.print_debug(f"FILE: [{file}]")
+        
+        # get the filenames (without extension) for each of the caption images
+        capimg_images_base_names = [os.path.splitext(file)[0].lower() for file in files if file.endswith(extension)]
+
+        
+        return capimg_images_base_names
+    
+    def read_text_file(self, full_file_path):
+        """Read the caption text file in read-only mode."""
+        with open(full_file_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+        
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
     
 class BKFileSelectNextUnprocessed:
     def __init__(self):
@@ -3103,6 +3216,7 @@ class BKGetNextImgWOCaption:
         self.image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
         self.update_cap_extension = ".updatecap"
         self.update_complete_extension = ".updatecomplete"
+        self.caption_image_extension = ".capimg"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3216,13 +3330,15 @@ class BKGetNextImgWOCaption:
                 print(f"Renaming file [{update_file_path}] to [{completed_file_path}]")
                 os.rename(update_file_path, completed_file_path)
             elif mode == "Delete Prompt Update File":
-                print(f"Deleting file [{update_file_path}]")
+                print(f"Deleting prompt update file [{update_file_path}]")
                 os.remove(update_file_path)
             else:
                 raise ValueError(f"Unknown mode: [{mode}]")
             
             if auto_delete_caption_image:
-                print("TODO: AUTO DELETE CAPTION IMAGE")
+                caption_image_path = f"{base_path}{self.caption_image_extension}"
+                print(f"Deleting caption image [{caption_image_path}]")
+                os.remove(caption_image_path)
 
             
             remaining = len(prompts_to_update) - 1
@@ -7880,6 +7996,7 @@ NODE_CLASS_MAPPINGS = {
     "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
     "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
     "BK Save Caption Image": BKSaveCaptionImage,
+    "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
 
 }
 
