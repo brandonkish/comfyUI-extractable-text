@@ -14,7 +14,7 @@
             </Grid.RowDefinitions>
 
             <Slider x:Name="SizeSlider"
-                    Minimum="100" Maximum="400"
+                    Minimum="100" Maximum="9999"
                     Value="200"
                     Margin="10"/>
 
