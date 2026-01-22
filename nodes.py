@@ -2713,6 +2713,7 @@ class BKGetNextCaptionFile:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.processed_captions = []
+        self.caption_log_name = "captionlog.caplog"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2735,7 +2736,6 @@ class BKGetNextCaptionFile:
     def IS_CHANGED(self, folder, auto_reset):
         return float("nan")
     
-    # ---------- Main process ----------
 
     def process(self, folder, auto_reset):
         # Resolve folder path
@@ -2753,6 +2753,8 @@ class BKGetNextCaptionFile:
         # Find valid caption/image pairs
         valid_files = self.find_text_files_with_matching_images(folder_path)
 
+
+
         # Select next unprocessed file
         filename, image_extension = self.select_next_unlogged_file(
             valid_files, logged_files
@@ -2761,6 +2763,8 @@ class BKGetNextCaptionFile:
         if filename is None:
             if auto_reset:
                 self.clear_caption_log(log_path)
+            else:
+                raise FileNotFoundError(f"No captions found that have not been processed in folder. You can delete the [{self.caption_log_name}] log in the [{folder_path}] folder to manually reset this.")
 
             return (
                 "",
@@ -2808,7 +2812,7 @@ class BKGetNextCaptionFile:
 
     def get_caption_log_path(self, folder_path):
         """Return the full path to the caption log file."""
-        return os.path.join(folder_path, "captionlog.caplog")
+        return os.path.join(folder_path, self.caption_log_name)
 
     # ---------- File discovery ----------
 
@@ -4354,6 +4358,109 @@ class BKSaveImage:
     def print_debug(self, string):
         if self.is_debug:
             print(string)
+
+
+##################################################################################################################
+# BK SAVE CAPTION IMAGE
+##################################################################################################################
+#TODO: Needs overhaul
+class BKSaveCaptionImage:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.is_debug = True
+        self.caption_image_ext = ".capimg"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image": ("IMAGE", ),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
+                "folder_path": ("STRING", {"default": f'', "multiline": False}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("IMAGE","full_path")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Save Caption Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, folder_path, filename):
+        return float("nan")
+
+    
+    def process(self, image, folder_path, filename):
+        print_debug_header(self.is_debug, "BK SAVE CAPTION IMAGE")
+        
+        
+        if filename is None:
+            raise ValueError(f"Please enter a name to save the file as.")
+        self.print_debug(f"filename: {filename}")
+
+        if folder_path is None:
+            raise ValueError(f"Please enter a folder path to save the file as.")
+
+        if not os.path.isabs(folder_path):
+            folder_path = f"{self.output_dir.strip()}\\{folder_path}"
+
+        # Define the full file path with the correct file separator for the OS
+        full_file_path = os.path.join(folder_path.strip(), f"{filename.strip()}{self.caption_image_ext}")
+
+
+        # Ensure the output directory exists
+        if folder_path.strip() != '':
+            if not os.path.exists(folder_path.strip()):
+                print(f'The path `{folder_path.strip()}` specified doesn\'t exist! Creating directory.')
+                os.makedirs(folder_path, exist_ok=True) 
+
+        self.print_debug(f"filepath: {full_file_path}")
+
+        savedpath = self.save_images(image, full_file_path)
+
+
+        print_debug_bar(self.is_debug)
+        return image, savedpath
+
+
+
+    def save_images(self, images, full_image_path) -> str:
+
+        if not full_image_path:
+            raise ValueError(f"Filepath is None when  or empty when saving caption image.")
+        
+        if images is None:
+            raise ValueError(f"Images is None when saving caption image.")
+        
+        if len(images) == 0:
+            raise ValueError(f"No images found in input!")
+
+        # Since we verified images is not 0, it must have one image, we only process the first image for this node.
+        image = images[0]
+
+        # Swap image from GPU to CPU, Normalize and Clamp img values to 0-255, convert into PIL (Python Image Library)
+        #   image which is able to hold metadata, convert to 8bit image (standard)
+        numpy_array = 255. * image.cpu().numpy()
+        pil_img = Image.fromarray(np.clip(numpy_array, 0, 255).astype(np.uint8))
+
+        # Since we are saving the image with a different ext, we need to force it to PNG format, we use no compression,
+        #   And allow PIL to attempt to re-arrange the data to make the file smaller without losing quality (optimize=True)
+        pil_img.save(full_image_path, format="PNG", compression_level=0, optimize = True)
+
+        return full_image_path
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+
 
     
 class BKGetLastFolderName:
@@ -7772,6 +7879,7 @@ NODE_CLASS_MAPPINGS = {
     "BK LoRA Test (Advanced)": BKLoRATestAdvanced,
     "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
     "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
+    "BK Save Caption Image": BKSaveCaptionImage,
 
 }
 
