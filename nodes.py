@@ -3107,8 +3107,9 @@ class BKGetNextImgWOCaption:
             "required": {
                 "folder_path": ("STRING", {"default": "","tooltip": "The absolute path of the folder you wish to search through. (Can be anywhere.)"}),
                 "update_prompt_tag": ("STRING",),
-                "mode": (["Delete Prompt Update File", "Rename Prompt Update File"],{"default":"Rename Prompt Update File"}),
+                "mode": (["Delete Prompt Update File", "Rename Prompt Update File"],{"default":"Delete Prompt Update File"}),
                 "caption_tag": ("STRING",),
+                "auto_delete_caption_image": ("BOOLEAN",{"default": True}),
             },
             "optional": {
                 "default_prompt" : ("STRING",),
@@ -3120,7 +3121,7 @@ class BKGetNextImgWOCaption:
     
     
     @classmethod
-    def IS_CHANGED(self, folder_path, update_prompt_tag, mode, caption_tag, default_prompt = "", update_prompt = ""):
+    def IS_CHANGED(self, folder_path,auto_delete_caption_image, update_prompt_tag, mode, caption_tag, default_prompt = "", update_prompt = ""):
         return float("nan")
     
     RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING","STRING",)  # This specifies that the output will be text
@@ -3138,7 +3139,7 @@ class BKGetNextImgWOCaption:
     #TODO: If the update system prompt is connected it will see if a "NAME.capupdate" file exists for the "NAME.txt" file. IF SO, it will replace the <TAG> in the UPDATE system prompt with the contents of the "NAME.capupdate" file, and if the file not exist, it will default to the connected NORMAL system prompt. And if no NORMAL system prompt is connected, it will return an empty string
 
 
-    def process(self, folder_path, update_prompt_tag,caption_tag, mode, default_prompt = "", update_prompt = ""):
+    def process(self, folder_path,auto_delete_caption_image, update_prompt_tag,caption_tag, mode, default_prompt = "", update_prompt = ""):
         # List of image file extensions we are interested in
         
         system_prompt = default_prompt
@@ -3146,45 +3147,56 @@ class BKGetNextImgWOCaption:
         # List to store image file names
         images_missing_txt = []
         prompts_to_update = []
+        extension = ""
         
         # Loop through the folder and get all image files
         for file in os.listdir(folder_path):
-            filename_wo_ext, file_extension = os.path.splitext(file)
+            filename_wo_ext, extension = os.path.splitext(file)
             # it we found an image in the folder
-            if file_extension.lower() in self.image_extensions:
+            if extension.lower() in self.image_extensions:
+                print("--------------")
+                print(f" file is image [{file}]")
                 
-                txt_file = os.path.join(folder_path, f"{filename_wo_ext}.txt")
-                capupdate_file = os.path.join(folder_path, f"{filename_wo_ext}.{self.update_cap_extension}")
-                if not os.path.exists(txt_file):
+                txt_filepath = os.path.join(folder_path, f"{filename_wo_ext}.txt")
+                capupdate_filepath = os.path.join(folder_path, f"{filename_wo_ext}{self.update_cap_extension}")
+                print(f"capupdate_filepath[{capupdate_filepath}]")
+                if not os.path.exists(txt_filepath):
+                    print(f"file is image and has no text file[{file}]")
                     # if the file exists, but not the txt file
                     images_missing_txt.append(file)
-                elif os. path.exists(capupdate_file):
+                elif os.path.exists(capupdate_filepath):
+                    print(f"file is image has a text file and has a capupdate[{file}]")
                     # if the image exists, and the txt file exists, and the capupdate file exists
-                    prompts_to_update.append([filename_wo_ext, file_extension])
+                    prompts_to_update.append([filename_wo_ext, extension])
+
+                print(f"file is image and has a text file and no capupdate file [{file}]")
 
 
-
+        print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+        for updates in prompts_to_update:
+            print(f"files need upadate [{updates}]")
         
         # If no images are found, raise an error
         if not images_missing_txt and not prompts_to_update:
-            raise FileNotFoundError("No image files found in the specified folder.")
+            raise FileNotFoundError("No images found that need captions or caption updating. All files processed!")
+        
+        current_time = datetime.now().strftime('%I:%M:%S %p')
         
         # If there are images without corresponding .txt files
         if images_missing_txt:
             # Get the first image without a corresponding .txt file
             first_missing_image = images_missing_txt[0]
             filename_wo_ext, extension = os.path.splitext(first_missing_image)
-            remaining = len(images_missing_txt) + len(prompts_to_update)
+            remaining = len(images_missing_txt) + len(prompts_to_update) - 1
             # Create the status message
-            current_time = datetime.now().strftime('%I:%M:%S %p')
             status = f"Processing [{filename_wo_ext}] with [{remaining}] remaining. [{current_time}]"
             return (filename_wo_ext, folder_path, extension, remaining, status, system_prompt)
         
         if prompts_to_update and update_prompt:
             base_name, img_ext = prompts_to_update[0]
             base_path = os.path.join(folder_path, base_name)
-            update_file_path = f"{base_path}.{self.update_cap_extension}"
-            completed_file_path = f"{base_path}.{self.update_complete_extension}"
+            update_file_path = f"{base_path}{self.update_cap_extension}"
+            completed_file_path = f"{base_path}{self.update_complete_extension}"
             caption_contents = self.read_text_file_contents(f"{base_path}.txt")
             update_contents = self.read_text_file_contents(update_file_path)
             system_prompt = update_prompt
@@ -3205,7 +3217,13 @@ class BKGetNextImgWOCaption:
             else:
                 raise ValueError(f"Unknown mode: [{mode}]")
             
-            return (filename_wo_ext, folder_path, extension, remaining, status, system_prompt)
+            if auto_delete_caption_image:
+                print("TODO: AUTO DELETE CAPTION IMAGE")
+
+            
+            remaining = len(prompts_to_update) - 1
+            status = f"Updating [{f"{base_name}{img_ext}"}]'s caption with [{remaining}] updates remaining. [{current_time}]"            
+            return (base_name, folder_path, img_ext, remaining, status, system_prompt)
 
         # If all images have corresponding .txt files
         raise FileNotFoundError("All images have captions, no missing captions found, and all prompts updated")
