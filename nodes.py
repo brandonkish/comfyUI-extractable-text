@@ -4589,6 +4589,73 @@ class BKSaveCaptionImage:
 
 
 
+
+#################################################################################################################
+# BK SAVE PATH FORMATTER
+##################################################################################################################
+#TODO: Needs overhaul
+class BKPathFormatter:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.is_debug = False
+
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
+            },
+            "optional": {
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "suffix": ("STRING", {"default": f'', "multiline": False}),
+                "subfolder": ("STRING", ),
+                "extension": ("STRING", ),
+                "folder_path": ("STRING", ),
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("path_string",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Path Formatter"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self,  filename,folder_path = None, subfolder = None, seed = None, suffix = None, extension = None):
+        return float("nan")
+
+    
+    def process(self,  filename, folder_path = None, subfolder = None, seed = None, suffix = None, extension = None):
+        print_debug_header(self.is_debug, "BK SAVE PATH FORMATTER")
+
+        if not os.path.isabs(folder_path):
+            folder_path = os.path.join(self.output_dir.strip(), folder_path.strip())
+        
+        if subfolder:
+            folder_path = os.path.join(folder_path, subfolder)
+        
+        if seed:
+            filename = f"{filename.strip()}_{seed}"
+
+        if suffix:
+            filename = f"{filename.strip()}_{suffix.strip()}"
+        
+        if extension:
+            filename = f"{filename.strip()}.{extension.strip('.').strip()}"
+        
+        fullpath = os.path.join(folder_path.strip(), filename.strip())
+
+        print_debug_bar(self.is_debug)
+        return (fullpath,)
+
+
+
+
     
 class BKGetLastFolderName:
     def __init__(self):
@@ -6569,30 +6636,10 @@ class BKLoRATest:
                     # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
                     # Wich should be its activation tag
                     if self.is_user_want_to_replace_tag(tag_to_replace):
-                        metadata_dict = self.get_safetensors_metadata_as_json(lora_full_path)
-                        
-                        # Try to read the embedded JSON metadata from the LoRA by reading its bytes directly 
-                        if metadata_dict is not None:
-                            ss_tag_frequency_str = self.get_ss_tag_frequency_str_from_metadata(metadata_dict)
-                            
-                            # Try to extract the most frequent tag from the ss_tag_frequency in the JSON metadata
-                            if ss_tag_frequency_str is not None:
-                                ss_tag_frequency_dict = json.loads(ss_tag_frequency_str)
-                                self.print_debug(f"ss_tag_frequency_dict: {ss_tag_frequency_dict}")
+                        freq_tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
 
-                                # Tries to extract the most frequent tag from the ss_tag_frequency dictionary
-                                most_frequent_ss_tag = self.get_most_frequent_ss_tag(ss_tag_frequency_dict)
-                                if most_frequent_ss_tag is not None:
-                                    self.print_debug(f"Replacing tag [{tag_to_replace}] in prompt with LoRA tag [{most_frequent_ss_tag}]")
-                                    
                                     # If everything suceeded, replace the tag in the positive prompt
-                                    positive = self.replace_tag_in_prompt(positive, tag_to_replace, most_frequent_ss_tag)
-                                else:
-                                    print(f"BKLoRATestingNode: WARNING: Could not find highest frequency tag in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
-                            else:
-                                print(f"BKLoRATestingNode: WARNING: 'ss_tag_frequency' not found in LoRA metadata for LoRA: {lora_path}. Proceeding without tag replacement.")
-                        else:
-                            print(f"BKLoRATestingNode: WARNING: Could not extract metadata from LoRA: {lora_path}. Proceeding without tag replacement.")
+                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, freq_tag['tag'])
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
@@ -7081,6 +7128,7 @@ class BKLoraAutoSwitcher:
     def __init__(self):
         self.is_debug = False
         self.selected_loras = SelectedLoras()
+        self.ignored_files = ["optimizer.pt"]
 
     @classmethod
     def IS_CHANGED(self, model, clip, lora_folder,  seed, every_nth_lora):
@@ -7125,6 +7173,9 @@ class BKLoraAutoSwitcher:
     LABEL = "BK LoRA Auto Switcher"  # Default label text
     OUTPUT_NODE = True
 
+    def remove_ignored_files(self, ignored_files: list, lora_paths: list):
+        return [path for path in lora_paths if os.path.basename(path) not in ignored_files]
+
 
     def process(self, model, clip, lora_folder,  seed, every_nth_lora):
         print_debug_header(self.is_debug, "BK LORA SWITCHER")
@@ -7136,27 +7187,29 @@ class BKLoraAutoSwitcher:
             raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
 
 
-        loras_rel_paths_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+        lora_paths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
-        if loras_rel_paths_in_folder is None or len(loras_rel_paths_in_folder) <= 0:
+        if lora_paths is None or len(lora_paths) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        
+        lora_paths = self.remove_ignored_files(self.ignored_files, lora_paths)
 
         seed = seed + (every_nth_lora - 1)
 
-        idx = self.convert_seed_to_idx(len(loras_rel_paths_in_folder), seed)
+        idx = self.convert_seed_to_idx(len(lora_paths), seed)
 
-        lora_items = self.selected_loras.updated_lora_items_with_text(loras_rel_paths_in_folder[idx])
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora_paths[idx])
 
         if len(lora_items) > 0:
                         for item in lora_items:
                             result = item.apply_lora(result[0], result[1])
 
-        lora_name = self.get_lora_name_from_relative_path(loras_rel_paths_in_folder[idx])
-        lora_full_path = folder_paths.get_full_path("loras", loras_rel_paths_in_folder[idx])
-        most_frequent_ss_tag = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        lora_name = self.get_lora_name_from_relative_path(lora_paths[idx])
+        lora_full_path = folder_paths.get_full_path("loras", lora_paths[idx])
+        tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()['tag']
 
         print_debug_bar(self.is_debug)
-        return(result[0], result[1], lora_name, idx, most_frequent_ss_tag)
+        return(result[0], result[1], lora_name, idx, tag)
     
     
     
@@ -7817,97 +7870,58 @@ class TSVPromptParser:
         return parsed_data
 
 
-class LoRAMetadataParser:
-    def __init__(self, lora_full_path: str, max_chunks:int):
-        self.lora_full_path = lora_full_path
-        self.max_chunks = max_chunks
-        self.is_debug = False
 
-    def get_safetensors_metadata_as_json(self):
+
+class STMetadataReader:
+    """Reads the metadata from a Safetensors file. Returns emtpy dict if no metadata found."""
+    def __init__(cls, safetensors_abs_path: str):
+        if not safetensors_abs_path.endswith('.safetensors'):
+            raise ValueError(f"Not a safetensors file: [{safetensors_abs_path}]")
+        cls.safetensors_path = safetensors_abs_path
+        cls.is_debug = False
+
+    def read_metadata_header(self):
         """ Returns the metadata as a json file stored in the LoRA Safetensors Header"""
-        with open(self.lora_full_path, 'rb') as file:
-            buffer = b''
-            metadata_start = b'"__metadata__":'
-            metadata_json_str = ""
 
-            curr_chunk = 0
+        if self.safetensors_path.endswith('.safetensors'):
+            import json
+            import struct
+            try:
+                with open(self.safetensors_path, 'rb') as safetensors_file:
+                    # Read the first 8 bytes to get the header size
+                    header_size = struct.unpack('<Q', safetensors_file.read(8))[0]
+                    header_json = safetensors_file.read(header_size)
+                    header = json.loads(header_json)
+                    return header
+            except Exception as e:
+                self.print_debug(f"Error reading safetensors metadata: {e}")
+                return {}
+        
+        ValueError(f"Not a safetensors file: [{self.safetensors_path}]")
 
-            while chunk := file.read(1024):  # Read in chunks
-                buffer += chunk
-                curr_chunk += 1
+    def print_debug(self, message):
+        if self.is_debug:
+            print(message)
 
-                if curr_chunk >= self.max_chunks:
-                    print(f"Failed to read safetensors metadata within the maximum of [{self.max_chunks}] chunks.")
-                    break
+class STMetadataParser:
+    def __init__(self, safetensors_reader: STMetadataReader):
+        self.metadata = safetensors_reader.read_metadata_header()
+    
+    def get_most_frequent_tag(self) -> dict:
+        """ Returns the most frequent tag from the ss_tag_frequency metadata as a dictionary with 'tag' and 'count'."""
+        tag_sets = self.metadata.get('__metadata__', {}).get('ss_tag_frequency', {})
+        max_tag = ""
+        max_value = 0  # Using an integer for comparison, not a string
 
-                buffer, is_metadata_start_found = self._truncate_buffer_to_start_of_metadata(buffer, metadata_start)
+        for tag_set, tags in json.loads(tag_sets).items():
+            for tag, frequency in tags.items():
+                if frequency >= max_value:
+                    max_value = frequency
+                    max_tag = tag
 
-                if is_metadata_start_found:
-                    if parsed_metadata := self._parse_metadata_from_buffer_as_str(buffer):
-                        metadata_json_str = parsed_metadata
-                        break
-
-            metadata_json_str = self._add_outer_braces(metadata_json_str)
-
-            self.print_debug(f"metadata_json_str[{metadata_json_str}]")
-
-            if metadata_json_str:
-                try:
-                    # Decode the JSON and return
-                    metadata_dict = json.loads(metadata_json_str)
-                    self.print_debug("Decoded metadata JSON (pretty printed):")
-                    self.print_debug(json.dumps(metadata_dict, indent=4))
-                    return metadata_dict["__metadata__"]
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    print(f"Error decoding JSON: {e}")
-
-            print("No __metadata__ section found.")
-            return None
-
-    def _truncate_buffer_to_start_of_metadata(self, buffer, metadata_start):
-        if metadata_start in buffer:
-            start_idx = buffer.find(metadata_start)
-            return buffer[start_idx:], True
-        return buffer, False
-
-    def _parse_metadata_from_buffer_as_str(self, buffer):
-        if not buffer:
-            return None
-        if len(buffer) < 2:
-            return None
-        is_first_brace_found = False
-        brace_count = 0
-
-        for idx, byte in enumerate(buffer):
-            if byte == ord('{'):
-                brace_count += 1
-                is_first_brace_found = True
-            elif byte == ord('}') and is_first_brace_found:
-                brace_count -= 1
-            
-            if brace_count == 0 and is_first_brace_found:
-                return buffer[:idx + 1].decode('utf-8')
-
-        return None
-
-    def _add_outer_braces(self, json_str):
-        return f"{{ {json_str} }}" if json_str else ""
-
-    def _get_ss_tag_frequency_json_from_metadata(self):
-        ss_tags_string =  self.get_safetensors_metadata_as_json().get("ss_tag_frequency", None)
-        return json.loads(ss_tags_string)
-
-    def get_most_frequent_ss_tag(self):
-        max_tag = None
-        max_value = -1
-
-        for tag, tag_info in self._get_ss_tag_frequency_json_from_metadata().items():
-            for inner_tag, value in tag_info.items():
-                if value > max_value:
-                    max_value = value
-                    max_tag = inner_tag
-
-        return max_tag
+        # Create a dictionary with both max tag and max value
+        result = {"tag": max_tag, "count": max_value}
+        return result
 
     def print_debug(self, message):
         if self.is_debug:
@@ -8044,8 +8058,9 @@ NODE_CLASS_MAPPINGS = {
     "BK LoRA Test (Advanced)": BKLoRATestAdvanced,
     "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
     "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
-    "BK Save Caption Image": BKSaveCaptionImage,
+    "BK Save Caption Image": BKPathFormatter,
     "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
+    "BK Path Formatter": BKPathFormatter,
 
 }
 
