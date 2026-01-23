@@ -7131,7 +7131,7 @@ class BKLoraAutoSwitcher:
         self.ignored_files = ["optimizer.pt"]
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder,  seed, every_nth_lora):
+    def IS_CHANGED(self, model, clip, lora_folder,  seed, every_nth_lora, enable):
         return float("nan")
 
     @classmethod
@@ -7161,7 +7161,7 @@ class BKLoraAutoSwitcher:
             "lora_folder": (lora_folder_paths,),
             "seed": ("INT", {"min" : 0} ),
             "every_nth_lora": ("INT", {"default": 1, "min": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
-              
+            "enable": ("BOOLEAN",), 
          },
          "optional": {
          }}
@@ -7177,10 +7177,13 @@ class BKLoraAutoSwitcher:
         return [path for path in lora_paths if os.path.basename(path) not in ignored_files]
 
 
-    def process(self, model, clip, lora_folder,  seed, every_nth_lora):
+    def process(self, model, clip, lora_folder,  seed, every_nth_lora, enable):
         print_debug_header(self.is_debug, "BK LORA SWITCHER")
         result = (model, clip,"","")
         lora_name = ""
+
+        if not enable:
+            return (model, clip, "DISABLED", "0", "NA")
 
         # Fail early if any of the required inputs are empty
         if not lora_folder:
