@@ -10,8 +10,8 @@ namespace AI_Toolkit_log_parser
 {
     public partial class MainWindow : Window
     {
-        // This list will hold the parsed safetensor data
         private List<SafetensorData> safetensors = new List<SafetensorData>();
+        private List<SafetensorData> filteredSafetensors = new List<SafetensorData>();
 
         public MainWindow()
         {
@@ -59,11 +59,9 @@ namespace AI_Toolkit_log_parser
             // Clear the existing data before parsing the new log file
             safetensors.Clear();
 
-            // Regex patterns for extracting loss values and safetensor file names
             string lossPattern = @"loss:\s([0-9\.e\-]+)";
             string safetensorPattern = @"Saved checkpoint to .+\\(.+\.safetensors)";
 
-            // Read the log file line by line
             var lines = File.ReadAllLines(logFilePath);
             SafetensorData currentData = default(SafetensorData);
 
@@ -92,8 +90,21 @@ namespace AI_Toolkit_log_parser
 
         private void DisplayResults()
         {
-            // Bind the results to the DataGrid
-            ResultsDataGrid.ItemsSource = safetensors;
+            // Set the filtered list initially to display all safetensors
+            filteredSafetensors = new List<SafetensorData>(safetensors);
+            ResultsDataGrid.ItemsSource = filteredSafetensors;
+        }
+
+        // Event for TextBox to filter results as the user types
+        private void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+        {
+            string searchText = SearchBox.Text.ToLower();
+
+            // Filter the list of safetensors by matching the name
+            filteredSafetensors = safetensors.Where(s => s.Name.ToLower().Contains(searchText)).ToList();
+
+            // Update the DataGrid to display the filtered results
+            ResultsDataGrid.ItemsSource = filteredSafetensors;
         }
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -108,7 +119,7 @@ namespace AI_Toolkit_log_parser
             if (saveFileDialog.ShowDialog() == true)
             {
                 // Save the safetensor data to a text file
-                File.WriteAllLines(saveFileDialog.FileName, safetensors.Select(s => s.ToString()));
+                File.WriteAllLines(saveFileDialog.FileName, filteredSafetensors.Select(s => s.ToString()));
                 MessageBox.Show("List saved successfully!");
             }
         }

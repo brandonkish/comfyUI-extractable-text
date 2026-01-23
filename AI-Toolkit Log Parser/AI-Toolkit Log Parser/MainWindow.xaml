@@ -6,11 +6,14 @@
         <!-- Button to Load Log File -->
         <Button Name="LoadButton" Content="Load Log" HorizontalAlignment="Left" VerticalAlignment="Top" Width="100" Height="30" Margin="10,10,0,0" Click="LoadButton_Click"/>
 
+        <!-- Search Box to filter the DataGrid -->
+        <TextBox Name="SearchBox" HorizontalAlignment="Left" VerticalAlignment="Top" Width="400" Margin="120,10,10,0" TextChanged="SearchBox_TextChanged" />
+
         <!-- DataGrid to Display the Safetensor Data -->
         <DataGrid Name="ResultsDataGrid" HorizontalAlignment="Left" VerticalAlignment="Top" Width="760" Height="350" Margin="10,50,10,0" AutoGenerateColumns="False" CanUserSortColumns="True">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Safetensor Name" Binding="{Binding Name}" Width="*"/>
-                <DataGridTextColumn Header="Loss Value" Binding="{Binding Loss}" Width="*"/>
+                <DataGridTextColumn Header="Safetensor Name" Binding="{Binding Name}" Width="*" />
+                <DataGridTextColumn Header="Loss Value" Binding="{Binding Loss}" Width="*" />
             </DataGrid.Columns>
         </DataGrid>
 
