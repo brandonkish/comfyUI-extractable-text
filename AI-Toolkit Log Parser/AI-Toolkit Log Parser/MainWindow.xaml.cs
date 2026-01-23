@@ -1,102 +1,116 @@
-﻿using Microsoft.Win32;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows;
-using System.Windows.Data;
+using Microsoft.Win32;
 
-namespace AI_Toolkit_Log_Parser
+namespace AI_Toolkit_log_parser
 {
     public partial class MainWindow : Window
     {
-        private ObservableCollection<LogEntry> logEntries;
-        private ListCollectionView sortedLogEntries;
-        private ICollectionView filteredLogEntries;
+        // This list will hold the parsed safetensor data
+        private List<SafetensorData> safetensors = new List<SafetensorData>();
 
         public MainWindow()
         {
             InitializeComponent();
-            logEntries = new ObservableCollection<LogEntry>();
-            sortedLogEntries = new ListCollectionView(logEntries);
-            filteredLogEntries = CollectionViewSource.GetDefaultView(logEntries);
-            LogListView.ItemsSource = filteredLogEntries;  // Binding to filtered view
         }
 
-        private void LoadLogButton_Click(object sender, RoutedEventArgs e)
+        // Struct to hold the safetensor's name and loss value
+        public struct SafetensorData
         {
-            var openFileDialog = new OpenFileDialog
+            public string Name { get; set; }
+            public double Loss { get; set; }
+
+            public SafetensorData(string name, double loss)
             {
-                Filter = "Log Files (*.txt)|*.txt|All Files (*.*)|*.*"
+                Name = name;
+                Loss = loss;
+            }
+
+            public override string ToString()
+            {
+                return $"{Name} - {Loss:F6}";
+            }
+        }
+
+        private void LoadButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Open a file dialog to select the log file
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*",
+                Title = "Select Log File"
             };
 
             if (openFileDialog.ShowDialog() == true)
             {
-                // Parse the log file
-                var parser = new LogParser();
-                var parsedEntries = parser.ParseLog(openFileDialog.FileName);
-
-                // Clear the existing entries and add the new ones
-                logEntries.Clear();
-                foreach (var entry in parsedEntries)
-                {
-                    logEntries.Add(entry);
-                }
-
-                // Automatically sort the log by Loss after loading the log
-                SortLog("Loss");
+                // Parse the selected log file
+                ParseLog(openFileDialog.FileName);
+                // Display the parsed data
+                DisplayResults();
             }
         }
 
-        private void SaveListButton_Click(object sender, RoutedEventArgs e)
+        private void ParseLog(string logFilePath)
         {
-            var saveFileDialog = new SaveFileDialog
+            // Clear the existing data before parsing the new log file
+            safetensors.Clear();
+
+            // Regex patterns for extracting loss values and safetensor file names
+            string lossPattern = @"loss:\s([0-9\.e\-]+)";
+            string safetensorPattern = @"Saved checkpoint to .+\\(.+\.safetensors)";
+
+            // Read the log file line by line
+            var lines = File.ReadAllLines(logFilePath);
+            SafetensorData currentData = default(SafetensorData);
+
+            foreach (var line in lines)
             {
-                Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
+                // Check for the loss value in the line
+                var lossMatch = Regex.Match(line, lossPattern);
+                if (lossMatch.Success)
+                {
+                    double lossValue = double.Parse(lossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                    currentData.Loss = lossValue; // Update loss value
+                }
+
+                // Check for safetensor save entries
+                var safetensorMatch = Regex.Match(line, safetensorPattern);
+                if (safetensorMatch.Success)
+                {
+                    string safetensorName = safetensorMatch.Groups[1].Value;
+                    safetensors.Add(new SafetensorData(safetensorName, currentData.Loss));
+                }
+            }
+
+            // Sort the safetensor list by the loss value (ascending)
+            safetensors = safetensors.OrderBy(s => s.Loss).ToList();
+        }
+
+        private void DisplayResults()
+        {
+            // Bind the results to the DataGrid
+            ResultsDataGrid.ItemsSource = safetensors;
+        }
+
+        private void SaveButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Open a SaveFileDialog to save the results
+            SaveFileDialog saveFileDialog = new SaveFileDialog
+            {
+                Filter = "Text Files (*.txt)|*.txt",
+                FileName = "SafetensorList.txt"
             };
 
             if (saveFileDialog.ShowDialog() == true)
             {
-                var filePath = saveFileDialog.FileName;
-
-                // Save the list to a file
-                var lines = new List<string>();
-                foreach (var entry in logEntries)
-                {
-                    lines.Add($"{entry.FileName} - Loss: {entry.Loss} - Step: {entry.Step}");
-                }
-
-                File.WriteAllLines(filePath, lines);
+                // Save the safetensor data to a text file
+                File.WriteAllLines(saveFileDialog.FileName, safetensors.Select(s => s.ToString()));
+                MessageBox.Show("List saved successfully!");
             }
-        }
-
-        private void SortLog(string sortBy)
-        {
-            // Handle sorting by Loss or Step
-            if (sortBy == "Loss")
-            {
-                sortedLogEntries.SortDescriptions.Clear();
-                sortedLogEntries.SortDescriptions.Add(new SortDescription("Loss", ListSortDirection.Ascending));
-            }
-            else if (sortBy == "Step")
-            {
-                sortedLogEntries.SortDescriptions.Clear();
-                sortedLogEntries.SortDescriptions.Add(new SortDescription("Step", ListSortDirection.Ascending));
-            }
-        }
-
-        private void SearchTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
-        {
-            string searchText = SearchTextBox.Text.ToLower();
-
-            // Apply the filter to the collection
-            filteredLogEntries.Filter = (entry) =>
-            {
-                var logEntry = entry as LogEntry;
-                return logEntry != null && logEntry.FileName.ToLower().Contains(searchText);
-            };
         }
     }
 }
