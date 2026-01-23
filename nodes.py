@@ -1,12 +1,12 @@
 from email.mime import image
 from torch import Tensor
 import os
-
 import scipy.ndimage as ndi
 from io import StringIO
 import hashlib
 import torch
 import torch.nn.functional as F
+import shutil
 import pandas as pd
 import itertools
 from datetime import datetime
@@ -29,7 +29,6 @@ import node_helpers
 from pathlib import Path
 import latent_preview
 from comfy.samplers import KSampler
-import os
 import csv
 import glob
 
@@ -41,7 +40,172 @@ try:
 except ImportError:
     piexif_loaded = False
 
+HEADER_LENGTH = 100
+MAX_SAFETENSOR_CHUNKS_TO_READ = 1000
 
+
+class TSVReader:
+    def __init__(self, tsv_filepath: str):
+        self.filepath = tsv_filepath
+        self.is_debug = True
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def to_dataframe(self):
+        """Reads the TSV file into a pandas dataframe. If file does not exist, or fails to load, returns an empty dataframe."""
+        self.print_debug(f"Loading TSV [{self.filepath}]")
+        if not os.path.exists(self.filepath):
+            print(f"File [{self.filepath}] does not exist. Could not open file.")
+            return pd.DataFrame()
+        
+        try:
+            # Try to open the file and read its content
+            with open(self.filepath, 'rb') as file:
+                # Read the file in binary mode
+                binary_content = file.read()
+                
+                # Decode the content to UTF-8, ignoring invalid characters
+                text_content = binary_content.decode('utf-8', errors='ignore')
+        
+        except (OSError, IOError) as e:
+            # Catch file-related errors like permission errors or file open issues
+            print(f"Error reading the file [{self.filepath}]: {e}")
+            return pd.DataFrame()  # Return an empty DataFrame if reading fails
+            
+        try:
+            # Use pandas to read the decoded text as a TSV string
+            tsv_data = StringIO(text_content)
+
+            # If the content is empty, handle gracefully
+            if not tsv_data.getvalue().strip():
+                print(f"The file [{self.filepath}] is empty or contains no data.")
+                return pd.DataFrame()  # Return an empty DataFrame if the content is empty
+            
+            # Attempt to read the file into a DataFrame
+            df = pd.read_csv(tsv_data, sep='\t')
+
+            if df.empty or len(df) < 1:
+                print(f"The file [{self.filepath}] is empty or contains no data.")
+                return pd.DataFrame()
+            
+        except (pd.errors.ParserError, ValueError) as e:
+            # Catch pandas-related parsing errors or if the DataFrame is empty
+            print(f"Error parsing the TSV file [{self.filepath}]: {e}")
+            return pd.DataFrame()  # Return an empty DataFrame if parsing fails
+
+        return df
+
+class TSVTestManager:
+    def __init__(self, tsv_reader: TSVReader, similartiy_weight: float):
+        self.results = self.parse(tsv_reader, similartiy_weight)
+        self.is_debug = True
+
+    def get_all_results(self):
+        """Returns a list of all test results in format [lora_name, std_dev, avg, rating]. Returns None if the TSV could not be loaded."""
+        return self.results
+
+    def get_top_results(self, lora_count:int):
+        """Gets all the results from the TSV file. If the TSV file does not exist or fails to load, returns None"""
+
+        if self.results is None:
+            return None
+
+        # Ensure lora_count does not exceed the number of available results
+        lora_count = min(lora_count, len(self.get_all_results()))
+
+        # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
+        top_loras = [
+            [lora_name, stddev_value, avg_value, rating] 
+            for (lora_name, stddev_value, avg_value), rating in self.get_all_results()[:lora_count]
+        ]
+        
+        return top_loras
+
+    def add_rating(self, all_lora_results, simularity_weight):
+        
+        # Initialize an empty list to store loras with their ratings
+        results_with_ratings = []
+        
+        # Calculate ratings for each lora
+        for lora in all_lora_results:
+            lora_name, stddev_value, avg_value = lora
+            # Calculate the rating using the given formula
+            rating = (simularity_weight * avg_value) + ((1 - simularity_weight) * stddev_value)
+            # Append the lora along with its rating
+            results_with_ratings.append((lora, rating))
+        
+        return results_with_ratings
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def parse(self, tsv_reader: TSVReader, simularity_weight):
+        """
+        Parse the dataframe to compute SD and AVG for each set and return it as a list
+        of [lora_name, std_dev, avg, rating].
+        Returns an empty list if the TSV file failed to parse, or if the dataframe is empty.
+        """
+        df = tsv_reader.to_dataframe()
+
+        # Handle None OR empty DataFrame
+        if df is None or df.empty:
+            return []
+        
+        results = []
+
+        # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
+        for lora_name, group in df.groupby('lora_name'):
+            values = group['value'].values
+
+            # Avoid division by zero when min_value == max_value
+            min_value = values.min()
+            max_value = values.max()
+
+            if not isinstance(min_value, float):
+                print(f"min_value is not float [{min_value}]")
+                continue
+            
+            if not isinstance(max_value, float):
+                print(f"max_value is not float [{min_value}]")
+                continue
+          
+            if min_value == max_value:
+                continue  # Skip if all values are the same
+
+            # Normalize values: (value - min) / (max - min)
+            normalized_values = (values - min_value) / (max_value - min_value)
+
+            # Calculate average and standard deviation
+            avg_value = np.mean(normalized_values)
+            stddev_value = np.std(normalized_values)
+
+            # Append the results in the format: [lora_name, stddev, avg]
+            results.append([lora_name, stddev_value, avg_value])
+
+        # If no results were computed, return an empty list
+        if not results:
+            return []
+
+        # Add ratings based on similarity weight
+        results = self.add_rating(results, simularity_weight)
+
+        # Sort by rating (ascending order)
+        results.sort(key=lambda x: x[3])
+
+        return results
+
+def print_debug_header(is_debug, name):
+    if is_debug:
+        name = f" DEBUG {name} "
+        sides = (HEADER_LENGTH - len(name)) // 2
+        print(f"{'#' * sides}{name}{'#' * sides}")
+
+def print_debug_bar(is_debug):
+    if is_debug:
+        print(f"{'#' * HEADER_LENGTH}")
 
 def make_filename(filename):
     return "image" if filename == "" else filename
@@ -1465,26 +1629,98 @@ class BKTSVRandomPrompt:
         return {
             "required": {
                 "tsv_file_path": ("STRING",),
-                "prompt_column":("STRING", {"default": "prompts"}),
                 "prompt_name_search": ("STRING",{"default": "", "tooltip":"Will select prompts that start with the name, and randomly choose one. If a unique name is found, it will use just the prompt with that unique name. If it fails to find the prompt by name, will fall back to using the index."}),
                 "seed": ("INT",),
-                "advanced_control": ("STRING", {"multiline": True, "default": f"", "tooltip": "<header>:set:<string> => Sets all instances of the header to a specific value. <header>:idx:<int> => sets all instances of header to use a specific idx in column, <header>:match:<header> => use same random idx when replacing header tags in the prompt for both columns (will roll over if idx is larger than items in column)"})
+                "name_tag": ("STRING",{"default":"<NAME>"}),
+                "subject_name": ("STRING",),
             },
             "optional":{
             }
         }
     
     @classmethod
-    def IS_CHANGED(self, tsv_file_path, prompt_column, seed, advanced_control = None, prompt_name = None):
+    def IS_CHANGED(self, tsv_file_path, seed, name_tag, subject_name,  prompt_name_search = None):
         return float("nan")
     
     RETURN_TYPES = ("STRING","STRING","STRING","INT","INT")  # This specifies that the output will be text
-    RETURN_NAMES = ("pos_prompt", "neg_prompt", "name", "seed", "idx")
+    RETURN_NAMES = ("pos_prompt", "neg_prompt", "prompt_name", "prompt_idx", "seed")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK TSV Random Prompt"  # Default label text
     OUTPUT_NODE = True
 
+
+    def process(self, tsv_file_path, seed, name_tag, subject_name, prompt_name_search = None):
+        self.name = ""
+
+        if not tsv_file_path:
+            raise ValueError("TSV file path is empty.")
+
+        tsv_file_path = self.convert_relative_path_to_abs(self.output_dir, tsv_file_path)
+
+        # Now load the new file with pandas
+        
+
+        
+        prompt_parser = TSVPromptParser(TSVReader(tsv_file_path))
+        prompts = prompt_parser.get_all_prompts()
+        tag_manager = TSVTagManager(prompt_parser)
+
+        matching_prompts = []
+        # If a name was provided get the prompt by name
+        if prompt_name_search:
+            matching_prompts = self.get_all_prompts_starting_with_name(prompts, prompt_name_search)
+
+            for prompt in matching_prompts:
+                self.print_debug(f"matching prompt[{prompt}]")
+
+            if not matching_prompts:
+                raise ValueError(f"matching prompts returned None for [{prompt_name_search}] in the TSV.")
+            
+            if len(matching_prompts) == 0:
+                raise ValueError(f"No prompts found where the name starts with [{prompt_name_search}] in the TSV.")
+        else:
+            matching_prompts = prompts
+
+        self.print_debug(f"len(matching_prompts)[{len(matching_prompts)}]")
+
+        idx = self.convert_seed_to_idx(len(matching_prompts), seed)
+        pos_prompt, neg_prompt, prompt_name, prompt_idx = matching_prompts[idx]
+
+        
+        
+        # Replace all tags in the prompt
+        for tag in tag_manager.get_all_tags():
+                tag_positive, tag_negative, tag_name, tag_idx, tag =  tag_manager.get_random_with_tag_name(tag_name)
+                pos_prompt = self.replace_tag_in_prompt(tag, tag_positive, pos_prompt)
+                neg_prompt = self.replace_tag_in_prompt(tag, tag_negative, neg_prompt)
+        
+        # Replace name tag in prompt if user has specified one
+        if name_tag:        
+            pos_prompt = self.replace_tag_in_prompt(name_tag, subject_name, pos_prompt)
+            neg_prompt = self.replace_tag_in_prompt(name_tag, subject_name, neg_prompt)
+        
+        
+        # TODO: Make a toggleable option to select if the name of the tags should be output in the name as well or not
+        # DONE: Have it so that any tags in the negative prompt are replaced by what is in the <TAG>_negative. So if the prompt_negative has a tag in it, that it will use the negative for that tag
+        # TODO: Have it throw an error if it can not parse a line on the advanced section with the line number and text displayed
+        # TODO: Make option to handle mode if name not found, either default to first image, use seed, or throw error
+        # TODO: Add ability to select prompts with specific tags (Implement as Noneable feild), Also allow exclusion of tag field
+        # TODO: Allow selection by "Random tag" vs "Output tag". Random tags are tags that will be randomized before the output is produced and are not present in the output, "Output" tag will be output in the prompt after all random tags are replaced
+        # TODO: Tag parameters should have be 4D [value, negative, name, tag] this way we can manipulate / search for it by tag also
+        # TODO: Prompt array should also have a "Output" and "Random" tag list that is generated for it [prompt, negative, name, [random], [output]]
+        # TODO: (Depreciated) Output tags will be generated by using the input "output" tags list and comparing it to the prompt to see if it contains any, if it does, it is added to the list? If this can be calculated with the excel sheet, should it really be a column maybe not. the time it would take to process a list, would probably be the same as just using the headers in the sheet.
+        # TODO: Filter by keywords, allow for searching of keywords in the prompt such as "pink" or "standing"
+
+
+        return pos_prompt, neg_prompt, prompt_name, prompt_idx, seed
+    
+    def replace_tag_in_prompt(self, tag, tag_value, prompt):
+        return prompt.replace(tag, tag_value)
+    
+    def is_any_prompts_in_list(self, prompts):
+        return len(prompts) == 0
+    
     def is_a_name_column(self, value: str) -> bool:
 
         if not isinstance(value, str):
@@ -1509,75 +1745,6 @@ class BKTSVRandomPrompt:
         return name.strip().lower()
 
 
-    def process(self, tsv_file_path, prompt_column, seed, advanced_control=None, prompt_name_search = None):
-        self.name = ""
-
-        if not tsv_file_path:
-            raise ValueError("TSV file path is empty.")
-        
-        if not prompt_column:
-            raise ValueError("No prompt column name specified. Need to know which column the prompts are in.")
-
-        tsv_file_path = self.convert_relative_path_to_abs(self.output_dir, tsv_file_path)
-
-        # Now load the new file with pandas
-        dataframe = self.read_file_to_dataframe(tsv_file_path)
-
-        if dataframe.empty:
-            raise ValueError("The file loaded as empty. Is there data in the file?")
-
-        # sanatize names for case insenstive compare
-        if prompt_name_search:
-            prompt_name_search = self.sanatize_name_for_case_insensitive_searching(prompt_name_search)
-        prompt_column = self.sanatize_name_for_case_insensitive_searching(prompt_column)
-
-        # Ensure prompt_column exists in the TSV file
-        if prompt_column not in dataframe.columns:
-            raise ValueError(f"The prompt column '{prompt_column}' was not found in TSV file [{tsv_file_path}].")
-        
-        dataframe = self.sanatize_headers_for_case_insensitve_searching(dataframe)
-        dataframe = self.sanatize_all_name_columns_for_case_insensitve_searching(dataframe)
-
-        
-
-        prompts = None
-        idx = -1
-
-        # If a name was provided get the prompt by name
-        if prompt_name_search:
-            prompt_name_column = self.get_name_column_name(prompt_column)
-            indexes_of_names = self.get_idx_list_of_names_starting_with_name(dataframe, prompt_name_column, prompt_name_search)
-            
-            if indexes_of_names.any():
-                idx_list_of_prompts_that_start_with_name = len(indexes_of_names)
-                idx = self.convert_seed_to_idx(idx_list_of_prompts_that_start_with_name, seed)
-                idx_of_prompt_that_starts_with_name = indexes_of_names[idx]
-                prompts = self.get_dataset_for_name_at_idx(dataframe, prompt_column, idx_of_prompt_that_starts_with_name)
-            
-            else:
-                self.print_debug(f"No prompts found that start with the name [{prompt_name_search}], defaulting to using the seed selection.")
-
-        if not prompts:
-            num_of_rows = self.get_total_num_of_rows_in_column(dataframe, prompt_column)
-            self.print_debug(f"num_of_rows[{num_of_rows}]")
-            idx = self.convert_seed_to_idx(num_of_rows, seed)
-            prompts = self.get_dataset_for_name_at_idx(dataframe, prompt_column, idx)
-        
-        # TODO: Make a toggleable option to select if the name of the tags should be output in the name as well or not
-        # TODO: Have it so that any tags in the negative prompt are replaced by what is in the <TAG>_negative. So if the prompt_negative has a tag in it, that it will use the negative for that tag
-        # TODO: if the negative tag is also in the postive tag, then it will use the same idx for both, if the negative tag is NOT in the positive prompt then it will select the negative tag by idx
-        # TODO: Have it throw an error if it can not parse a line on the advanced section with the line number and text displayed
-        # TODO: Make option to handle mode if name not found, either default to first image, use seed, or throw error
-        # TODO: Add ability to select prompts with specific tags (Implement as Noneable feild), Also allow exclusion of tag field
-        # TODO: Allow selection by "Random tag" vs "Output tag". Random tags are tags that will be randomized before the output is produced and are not present in the output, "Output" tag will be output in the prompt after all random tags are replaced
-        # TODO: Tag parameters should have be 4D [value, negative, name, tag] this way we can manipulate / search for it by tag also
-        # TODO: Prompt array should also have a "Output" and "Random" tag list that is generated for it [prompt, negative, name, [random], [output]]
-        # TODO: (Depreciated) Output tags will be generated by using the input "output" tags list and comparing it to the prompt to see if it contains any, if it does, it is added to the list? If this can be calculated with the excel sheet, should it really be a column maybe not. the time it would take to process a list, would probably be the same as just using the headers in the sheet.
-        # TODO: Filter by keywords, allow for searching of keywords in the prompt such as "pink" or "standing"
-
-        pos_prompt, neg_prompt, name  = prompts
-
-        return pos_prompt, neg_prompt, name, seed, idx
     
     def value(self, data_set):
         return data_set[2]
@@ -1603,31 +1770,22 @@ class BKTSVRandomPrompt:
     def get_name_column_name(self, name):
         stripped_name = self.strip_suffixs_from_name(name)
         return f"{stripped_name}{self.name_column_suffix}"
-    
-
-    
-    def get_dataset_for_name_at_idx(self, dataframe, name_any, idx):
-        value = self.get_required_column_value_by_idx(dataframe, self.get_value_column_name(name_any), idx)
-        negative = self.get_optional_column_value_by_idx(dataframe, self.get_negative_column_name(name_any), idx)
-        name = self.get_optional_column_value_by_idx(dataframe, self.get_name_column_name(name_any), idx)
-        return (value, negative, name)
-
-    def get_idx_list_of_names_starting_with_name(self, dataframe, name_column, name):
 
 
-        self.print_debug(f"name_column[{name_column}]")
-        self.print_debug(f"name[{name}]")
-        # Returns a 1D array of boolean where only matching values (starting with `name`)
-        # in the column return a true value
+    def get_all_prompts_starting_with_name(self, prompts, start_with_name):
 
-        self.print_debug(f"dataframe[name_column[{dataframe[name_column]}]")
-        all_matching_rows_in_column = dataframe[name_column].str.startswith(name, na=False)
+        all_matching_prompts = []
 
-        self.print_debug(f"all_matching_rows_in_column[{all_matching_rows_in_column}]")
-        
-        # Returns a list of indices of the rows where the value starts with `name`
-        list_of_matching_idx_for_name_column = dataframe[all_matching_rows_in_column].index
-        return list_of_matching_idx_for_name_column
+        for prompt in prompts:
+            positive, negative, name, idx = prompt
+            self.print_debug(f"name[{name}]")
+            if name:
+                self.print_debug(f"name[{name}] is true")
+                if name.startswith(str(start_with_name)):
+                    self.print_debug(f"name[{name}] starts with [{start_with_name}]")
+                    all_matching_prompts.append(prompt)
+
+        return all_matching_prompts
         
     def convert_seed_to_idx(self, length, seed):
         # Use modulus to ensure the seed is within the bounds of the prompt_column length
@@ -1636,6 +1794,9 @@ class BKTSVRandomPrompt:
         self.print_debug(f"seed[{seed}]")
 
         if seed == 0:
+            return 0
+        
+        if length == 0:
             return 0
 
         return seed % length  # Adjust seed to be within valid range for the column
@@ -1916,88 +2077,198 @@ class BKFileSelector:
         # Return the requested information
         return (filename, source_path, extension, full_path, total_files_found, file_list, file_list_w_idx, status)
 
-import shutil
-class BKMoveFile:
+##################################################################################################################
+# BK Move File
+##################################################################################################################
+
+class BKMoveOrCopyFile:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
         # Define the types of inputs your node accepts (single "text" input)
         return {
             "required": {
+                "mode": (["Skip if exists", "Overwrite", "Rename if exists"], {"default": "Skip if exists" ,"tooltip": "How to handle if the destination file already exists."}),
+                "operation": (["Move", "Copy"], {"default": "Copy", "tooltip": "Whether to move or copy the file."}),
+                "src_folder": ("STRING", {"default": "","tooltip": "Absolute folder path, or will apply relative path to inside of output folder."}),
                 "src_filename": ("STRING", {"default": "filename","tooltip": "Filename of source file."}),
-                "src_folder_path": ("STRING", {"default": "","tooltip": "Folder path of source file."}),
-                "src_extension": ("STRING", {"default": "png","tooltip": "Extension of source file"}),
-                "dest_filename": ("STRING", {"default": "filename","tooltip": "Filename of destination file."}),
-                "dest_folder_path": ("STRING", {"default": "","tooltip": "Folder path of destination file."}),
-                "dest_extension": ("STRING", {"default": "png","tooltip": "Extension of destination file"}),
-                "dest_subfolder": ("STRING", {"default": "","tooltip": "Subfolder in 'dest_subfolder' to save the destination file in."}),
+                "src_extension": ("STRING", {"default": "png","tooltip": "If empty, will keep same extension as source file. Else will change to this extension."}),
+                "dest_folder": ("STRING", {"default": "moved","tooltip": "Absolute folder path, or will apply relative path to inside of src folder path."}),
+                "change_filename_to": ("STRING", {"default": "","tooltip": "Filename of destination file."}),
+                "change_extension_to": ("STRING", {"default": "","tooltip": "If empty, will keep same extension as source file. Else will change to this extension."}),
                 "is_move_file": ("BOOLEAN",{"default": True}),
                 
             }
         }
     
     RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("dest_filename","dest_folder_path", "dest_extension","dest_full_path",)
+    RETURN_NAMES = ("dest_filename","dest_absolute_folder", "dest_extension","dest_file_path", "status")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
-    LABEL = "BK Move File"  # Default label text
+    LABEL = "BK Move Or Copy File"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, src_filename, src_folder_path, src_extension, dest_filename, dest_folder_path, dest_extension,dest_subfolder, is_move_file):
+    def IS_CHANGED(self, src_filename, src_folder, src_extension, change_filename_to, dest_folder, change_extension_to, is_move_file, operation = "Copy", mode = "Overwrite"):
         return float("nan")
-
-    def process(self, src_filename, src_folder_path, src_extension, dest_filename, dest_folder_path, dest_extension, is_move_file, dest_subfolder=None):
-        
-        if is_move_file:
-            # Normalize the source and destination folder paths to handle both Windows and Python-style paths
-            src_folder_path = os.path.normpath(src_folder_path)
-            dest_folder_path = os.path.normpath(dest_folder_path)
-            
-            # Construct the full source file path
-            src_full_path = os.path.join(src_folder_path, src_filename + src_extension)
-
-            print(f"src_full_path: [{src_full_path}]")
-
-            # If the destination extension is provided, make sure the file gets the correct extension
-            if dest_extension:
-                dest_filename = f"{os.path.splitext(dest_filename)[0]}{dest_extension}"
-
-            # Construct the full destination file path
-            if dest_subfolder:
-                dest_full_path = os.path.join(dest_folder_path, dest_subfolder, dest_filename)
-            else:
-                dest_full_path = os.path.join(dest_folder_path, dest_filename)
-
-            print(f"dest_full_path: [{dest_full_path}]")
-
-            # Check if the source file exists before attempting to move it
-            if not os.path.isfile(src_full_path):
-                raise Exception(f"Source file {src_full_path} not found. Please check the path.")
-
-            # Try moving the file using os.rename()
-            try:
-
-                # Ensure the destination folder exists, create it if it doesn't
-                dest_folder = os.path.dirname(dest_full_path)
-                if not os.path.exists(dest_folder):
-                    print(f"Destination folder does not exist. Creating folder: {dest_folder}")
-                    os.makedirs(dest_folder)  # Creates the destination folder and any missing intermediate folders
-
-                # os.rename() can be used to move a file
-                os.rename(src_full_path, dest_full_path)
-                return (dest_filename, dest_folder_path, dest_extension, dest_full_path)
-            except FileNotFoundError as e:
-                raise Exception(f"Source file {src_full_path} not found. - [{e}]")
-            except PermissionError as e:
-                raise Exception(f"Permission denied while moving {src_full_path}. - [{e}]")
-            except Exception as e:
-                raise Exception(f"An error occurred while moving the file: {e}")
+    
+    def get_dest_file_name(self, filename, src_filename):
+        if not filename:
+            return src_filename
         else:
-            return ("", "", "", "")
+            return filename
+    
+    def process(self, src_filename, src_folder, src_extension, change_filename_to, dest_folder, change_extension_to, is_move_file, operation = "Copy", mode = "Overwrite"):
+        print_debug_header(self.is_debug, "BK MOVE OR COPY FILE")
+        
+        if not src_filename:
+            raise ValueError("Source filename is empty. Please provide a valid source filename.")
+        
+        if not src_extension:
+            raise ValueError("Source extension is empty. Please provide a valid source file extension.")
+        
+        if not src_folder:
+            raise ValueError("Source folder is empty. Please provide a valid source folder path.")
 
+
+        src_folder = os.path.normpath(src_folder)
+        if dest_folder:
+            dest_folder = os.path.normpath(dest_folder)
+
+        src_abs_folder = self.get_abs_folder(src_folder, self.output_dir)
+        src_file_path = self.get_file_path(src_abs_folder, src_filename, src_extension)
+
+        change_filename_to = self.get_dest_file_name(change_filename_to, src_filename)
+
+        dest_extension = self.get_dest_ext(src_extension, change_extension_to)
+
+        dest_abs_folder = self.get_abs_folder(dest_folder, src_abs_folder)
+        dest_file_path = self.get_file_path(dest_abs_folder, change_filename_to, dest_extension)
+
+        status = f"Moved file {src_file_path} to {dest_file_path}."
+
+        if not is_move_file:
+            status = self.set_status("is_move_file is set to False, skipping move operation.")
+            return (change_filename_to, dest_abs_folder, dest_extension,dest_file_path, status)
+        
+        # Check if the source file exists before attempting to move it
+        if self.is_file_missing(src_file_path):
+            raise Exception(f"Source file {src_file_path} not found. Please check the path.")
+        
+        if self.is_file_exists(dest_file_path):
+            if mode == "Skip if exists":
+                status = self.set_status(f"Destination file {dest_file_path} already exists. Mode set to 'Skip if exists'. Skipping move operation.")
+                return (change_filename_to, dest_abs_folder, dest_extension,dest_file_path, status)
+            
+            elif mode == "Rename if exists":
+                new_dest_file_path = self.rename_file_if_exists(dest_file_path)
+                status = self.set_status(f"Destination file [{dest_file_path}] already exists. Mode set to 'Rename if exists'. Renaming to [{new_dest_file_path}].")
+                dest_file_path = new_dest_file_path
+            
+            else:
+                status = self.set_status(f"Destination file [{dest_file_path}] already exists. Mode set to 'overwrite'. Overwriting file.")
+                dest_file_path = dest_file_path
+
+
+        try:
+            if dest_file_path == src_file_path:
+                status = self.set_status(f"Source file and destination file are the same [{src_file_path}]. No move needed.")
+                return (change_filename_to, dest_abs_folder, dest_extension, dest_file_path, status)
+
+            self.create_folder_if_missing(dest_abs_folder)
+
+            if operation == "Copy":
+                self.copy_file(src_file_path, dest_file_path)
+            elif operation == "Move":
+                self.move_file(src_file_path, dest_file_path)
+            else:
+                raise ValueError(f"Invalid operation mode: {mode}. Supported modes are 'Move' and 'Copy'.")
+
+            print_debug_bar(self.is_debug)
+            return (change_filename_to, dest_abs_folder, dest_extension, dest_file_path, status)
+        except FileNotFoundError as e:
+            raise Exception(f"Source file {src_file_path} not found. - [{e}]")
+        except PermissionError as e:
+            raise Exception(f"Permission denied while moving {src_file_path}. - [{e}]")
+    
+    def change_file_extension(self, filename, new_extension):
+        base = os.path.splitext(filename)[0]
+        if not new_extension.startswith('.'):
+            new_extension = '.' + new_extension
+        return base + new_extension
+    
+    def set_relative_path_to_output_folder(self, path):
+        return os.path.join(self.output_dir, path)
+    
+    def get_absolute_folder_path(self, root_folder, path):
+        return os.path.join(root_folder, path)
+
+    def is_relative_path(self, path):
+        return not os.path.isabs(path)
+    
+    def get_file_path(self, folder, filename, extension):
+        return os.path.join(folder, f"{filename.strip(".")}.{extension.lower().strip(".")}")
+    
+    def is_dest_ext_specified(self, dest_extension):
+        return dest_extension not in ("", None)
+
+    def get_dest_ext(self, src_ext, dest_ext):
+        if self.is_dest_ext_specified(dest_ext):
+            return dest_ext.lower().strip(".")
+        else:
+            return src_ext.lower().strip(".")
+    
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def is_file_missing(self, file_path):
+        return not os.path.isfile(file_path)
+    
+    def is_file_exists(self, file_path):
+        return os.path.isfile(file_path)
+    
+    def set_status(self, status):
+        print(f"BKMoveFile: {status}")
+        return status
+    
+    def get_folder_path(self, file_path):
+        return os.path.dirname(file_path)
+    
+    def create_folder_if_missing(self, folder_path):
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+            self.print_debug(f"Created missing folder: {folder_path}")
+
+    def move_file(self, src_path, dest_path):
+        os.rename(src_path, dest_path)
+        self.print_debug(f"Moved file from [{src_path}] to [{dest_path}]")
+
+    def copy_file(self, src_path, dest_path):
+        shutil.copy(src_path, dest_path)
+        self.print_debug(f"Copied file from [{src_path}] to [{dest_path}]")
+
+    def rename_file_if_exists(self, dest_file_path):
+        base, extension = os.path.splitext(dest_file_path)
+        counter = 1
+        new_dest_file_path = f"{base}_{counter}{extension}"
+        while os.path.isfile(new_dest_file_path):
+            counter += 1
+            new_dest_file_path = f"{base}_{counter}{extension}"
+        return new_dest_file_path
+
+    
 
         
 class BKFileSelectNextMissing:
@@ -2087,6 +2358,119 @@ class BKFileSelectNextMissing:
 
         # Return the requested information
         return (filename, source_path, extension, full_path, (total_files_found - 1), file_list, file_list_w_idx, status, dest_path)
+
+
+########################################################################################################################################
+# BK GET NEXT MISSING CAPTION IMAGE
+########################################################################################################################################
+
+class BKGetNextMissingCaptionImage:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.caption_image_extension = ".capimg"
+        self.caption_txt_file_ext = ".txt"
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "caption_folder": ("STRING", {"default": "","tooltip": "The source path is the relative path to the folder with the files you wish to modify. Can use absolute or relative path, if relative, starts in output folder."}),
+                
+            }
+        }
+    
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING","INT","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("caption_text", "caption_image_filename", "caption_folder", "caption_image_extension", "caption_image_full_path", "num_of_missing_caption_images", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Get Next Missing Caption Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, caption_folder):
+        return float("nan")
+
+    def process(self, caption_folder):
+
+        caption_folder = caption_folder.strip()
+
+        # Check if the provided path is absolute or relative
+        if not os.path.isabs(caption_folder):
+            # If relative, construct the path with the output directory
+            caption_folder = f"{self.output_dir.strip("\\").strip()}\\{caption_folder}".strip()
+
+        if not os.path.exists(caption_folder.strip()):
+            raise NotADirectoryError(f"Caption folder not found [{caption_folder}].")
+
+
+        all_caption_images = self.get_lowered_base_names_of_files_in_folder_by_ext(caption_folder, self.caption_image_extension)
+        all_caption_txt_files = self.get_lowered_base_names_of_files_in_folder_by_ext(caption_folder, self.caption_txt_file_ext)
+
+        if len(all_caption_txt_files) == 0:
+            raise FileNotFoundError(f"No caption text files found in folder [{caption_folder}].")
+
+        self.print_debug("============ ALL CAPTION IMAGES ==================")
+        for image in all_caption_images:
+            self.print_debug(f"CAPTION IMAGE: [{image}]")
+
+        self.print_debug("============ ALL CAPTION TEXTS ==================")
+        for text in all_caption_txt_files:
+            self.print_debug(f"CAPTION TEXT: [{text}]")    
+
+        all_missing_caption_images = []
+
+        for caption_txt_file in all_caption_txt_files:
+            if not caption_txt_file in all_caption_images:
+                all_missing_caption_images.append(caption_txt_file)
+
+        num_of_missing_caption_images = len(all_missing_caption_images)
+
+        if num_of_missing_caption_images == 0:
+            raise FileNotFoundError(f"No missing caption images found. All caption txt files have caption images!")
+        
+        all_missing_caption_images.sort()
+        next_missing_caption_image_name = all_missing_caption_images[0]
+
+
+        caption_image_full_path = f"{caption_folder.strip()}\\{next_missing_caption_image_name.strip()}{self.caption_image_extension}"
+        caption_text_full_path = f"{caption_folder.strip()}\\{next_missing_caption_image_name.strip()}{self.caption_txt_file_ext}"
+        caption_text = self.read_text_file(caption_text_full_path)
+
+
+        current_time = datetime.now().strftime('%I:%M:%S %p')
+        status = f"Processing [{next_missing_caption_image_name}] {num_of_missing_caption_images - 1} remaining. [{current_time}]"
+
+        
+
+        # Return the requested information
+        return (caption_text, next_missing_caption_image_name, caption_folder, self.caption_image_extension, caption_image_full_path, (num_of_missing_caption_images - 1), status)
+    
+    def get_lowered_base_names_of_files_in_folder_by_ext(self, folder, extension):
+        """ Returns a list of all files found in the folder with the specified extension. Files names are returned without extension and in lower case for ease of comparison"""
+        # List all files in the directory
+        files = os.listdir(folder)
+
+
+        self.print_debug("============================FILES===========================")
+        for file in files:
+            self.print_debug(f"FILE: [{file}]")
+        
+        # get the filenames (without extension) for each of the caption images
+        capimg_images_base_names = [os.path.splitext(file)[0].lower() for file in files if file.endswith(extension)]
+
+        
+        return capimg_images_base_names
+    
+    def read_text_file(self, full_file_path):
+        """Read the caption text file in read-only mode."""
+        with open(full_file_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+        
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
     
 class BKFileSelectNextUnprocessed:
     def __init__(self):
@@ -2431,10 +2815,211 @@ class BKNextUnprocessedImageInFolder:
 
         # Return the requested information
         return (filename, folder, extension, full_path, remaining_files, file_list, file_list_w_idx, status)
+
+
+##################################################################################################################
+# BK Get Next Caption File
+##################################################################################################################
+
+
+class BKGetNextCaptionFile:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.processed_captions = []
+        self.caption_log_name = "captionlog.caplog"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "folder": ("STRING", {"default": "","tooltip": "The node will scan the source path folder for any of the specified files, it will then return the next file that is in the source path, but not in the destination path. ex. If the source path has a file called 'image.png', and the destination folder does not, it will output the info for the 'image.png' file found in the source folder. It will keep doing this until all files in the source folder are found in the destination folder. Can use absolute or relative path, if relative, starts in output folder."}),
+                "auto_reset": ("BOOLEAN",),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "INT", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("caption Text", "filename", "folder_path", "image_extension", "remaining_files", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Get Next Caption File"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, folder, auto_reset):
+        return float("nan")
     
+
+    def process(self, folder, auto_reset):
+        # Resolve folder path
+        folder_path = self.resolve_folder_path(folder)
+
+        if not os.path.isdir(folder_path):
+            raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+        # Locate caption log
+        log_path = self.get_caption_log_path(folder_path)
+
+        # Read existing log
+        logged_files = self.read_caption_log(log_path)
+
+        # Find valid caption/image pairs
+        valid_files = self.find_text_files_with_matching_images(folder_path)
+
+
+
+        # Select next unprocessed file
+        filename, image_extension = self.select_next_unlogged_file(
+            valid_files, logged_files
+        )
+
+        if filename is None:
+            if auto_reset:
+                self.clear_caption_log(log_path)
+            else:
+                raise FileNotFoundError(f"No captions found that have not been processed in folder. You can delete the [{self.caption_log_name}] log in the [{folder_path}] folder to manually reset this.")
+
+            return (
+                "",
+                "",
+                folder_path,
+                "",
+                0,
+                "No remaining files to process.",
+            )
+
+        # Count remaining files
+        remaining_files = self.count_remaining_unlogged_files(
+            valid_files, logged_files, filename
+        )
+
+        # Read caption text
+        caption_text = self.read_caption_text_file(folder_path, filename)
+
+        # Update caption log
+        self.append_to_caption_log(log_path, filename)
+
+        # Auto-reset only when nothing remains
+        if auto_reset and remaining_files == 0:
+            self.clear_caption_log(log_path)
+
+        # Build status
+        status = self.build_status_text(filename, remaining_files)
+
+        return (
+            caption_text,
+            filename,
+            folder_path,
+            image_extension,
+            remaining_files,
+            status,
+        )
+
+    # ---------- Path handling ----------
+
+    def resolve_folder_path(self, folder):
+        """Determine whether the folder path is absolute or relative."""
+        if os.path.isabs(folder):
+            return os.path.normpath(folder)
+        return os.path.normpath(os.path.join(self.output_dir, folder))
+
+    def get_caption_log_path(self, folder_path):
+        """Return the full path to the caption log file."""
+        return os.path.join(folder_path, self.caption_log_name)
+
+    # ---------- File discovery ----------
+
+    def get_supported_image_extensions(self):
+        """Return supported image file extensions."""
+        return {
+            ".png", ".jpg", ".jpeg", ".bmp",
+            ".tiff", ".tif", ".webp"
+        }
+
+    def find_text_files_with_matching_images(self, folder_path):
+        """
+        Find all .txt files that have an image file
+        with the same base name.
+        """
+        valid_files = []
+        image_extensions = self.get_supported_image_extensions()
+
+        for entry in os.listdir(folder_path):
+            if not entry.lower().endswith(".txt"):
+                continue
+
+            base_name = os.path.splitext(entry)[0]
+
+            for ext in image_extensions:
+                image_path = os.path.join(folder_path, base_name + ext)
+                if os.path.isfile(image_path):
+                    valid_files.append((base_name, ext))
+                    break
+
+        return sorted(valid_files, key=lambda x: x[0])
+
+    # ---------- Caption log handling ----------
+
+    def read_caption_log(self, log_path):
+        """Read processed filenames from captionlog.caplog."""
+        if not os.path.isfile(log_path):
+            return []
+
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def append_to_caption_log(self, log_path, filename):
+        """Append a filename to the caption log."""
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(filename + "\n")
+
+    def clear_caption_log(self, log_path):
+        """Clear the caption log file."""
+        open(log_path, "w").close()
+
+    # ---------- Selection logic ----------
+
+    def select_next_unlogged_file(self, valid_files, logged_files):
+        """Select the next file not found in the caption log."""
+        for base_name, img_ext in valid_files:
+            if base_name not in logged_files:
+                return base_name, img_ext
+        return None, None
+
+    def count_remaining_unlogged_files(self, valid_files, logged_files, current_filename):
+        """Count remaining unlogged files excluding the current one."""
+        return sum(
+            1 for base_name, _ in valid_files
+            if base_name not in logged_files and base_name != current_filename
+        )
+
+    # ---------- File reading ----------
+
+    def read_caption_text_file(self, folder_path, filename):
+        """Read the caption text file in read-only mode."""
+        txt_path = os.path.join(folder_path, filename + ".txt")
+        with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    # ---------- Status ----------
+
+    def build_status_text(self, filename, remaining_files):
+        """Build the status text."""
+        return f"Processing file [{filename}.txt] with [{remaining_files}] reamaining."
+
+    
+
+
+    
+
+##################################################################################################################
+# BK AI Text Cleaner
+##################################################################################################################
+
 class BKAITextCleaner:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2457,11 +3042,52 @@ class BKAITextCleaner:
     def IS_CHANGED(self, text, exclude):
         return float("nan")
     
-        
+    def sanitize_excluded_tags_to_list(self, exclude):
+        if exclude:
+            excluded_tags_list = [tag for tag in exclude.split(',') if tag]
+        else:
+            excluded_tags_list = []
+        return excluded_tags_list
+    
+    def has_not_reached_end_of_text(self, idx, text):
+        return idx < len(text)
+
+    def is_tag_found_at_index(self, text, idx, tag):
+        return text[idx:idx + len(tag)] == tag
+
+    def move_index_past_tag(self, idx, tag):
+        return idx + len(tag)
+    
+    def is_tag_not_found_at_index(self, matched):
+        return not matched
+    
+    def find_matching_tag(self, text, idx, excluded_tags_list):
+        for tag in excluded_tags_list:
+            if self.is_tag_found_at_index(text, idx, tag):
+                return tag
+        return None
+    
+    def handle_found_tag(self, tag, idx, current_part, parts):
+        if current_part:
+            parts.append(current_part)
+
+        parts.append(tag)
+        current_part = ""
+        idx = self.move_index_past_tag(idx, tag)
+
+        return idx, current_part
+    
+    def handle_regular_character(self, text, idx, current_part):
+        current_part += text[idx]
+        idx += 1
+        return current_part, idx
+
+
 
     def process(self, text, exclude):
-        # Convert excluded_tags into a list for easy lookup
-        excluded_tags_list = exclude.split(',')
+        print_debug_header(self.is_debug, "BK AI TEXT CLEANER")
+        
+        excluded_tags_list = self.sanitize_excluded_tags_to_list(exclude)
 
         # Create a list of text parts
         parts = []
@@ -2469,22 +3095,16 @@ class BKAITextCleaner:
         
         # Use regex to match the excluded tags and split the text
         idx = 0
-        while idx < len(text):
-            matched = False
-            for tag in excluded_tags_list:
-                if text[idx:idx+len(tag)] == tag:
-                    # If we encounter an excluded tag, add the current part and the tag itself
-                    if current_part:
-                        parts.append(current_part)
-                    parts.append(tag)
-                    current_part = ""
-                    idx += len(tag)  # Skip over the tag
-                    matched = True
-                    break
-            if not matched:
-                # Otherwise, continue adding the non-matching characters
-                current_part += text[idx]
-                idx += 1
+
+        self.print_debug(f"len(text): {len(text)}")
+
+        while self.has_not_reached_end_of_text(idx, text):
+            tag = self.find_matching_tag(text, idx, excluded_tags_list)
+
+            if tag:
+                idx, current_part = self.handle_found_tag(tag, idx, current_part, parts)
+            else:
+                current_part, idx = self.handle_regular_character(text, idx, current_part)
 
         # If there's any remaining non-matching part, append it
         if current_part:
@@ -2494,8 +3114,6 @@ class BKAITextCleaner:
         for i in range(len(parts)):
             if parts[i] not in excluded_tags_list:
                 # Remove text inside special characters (e.g., '*' '<' '>')
-                # parts[i] = re.sub(r'([^\w\s,])\S*([^\w\s,])', '', parts[i])
-                #parts[i] = re.sub(r'([^\w\s,\-])\S*([^\w\s,\-])', '', parts[i])
                 parts[i] = re.sub(r'([^\w\s,\-\*])\S*([^\w\s,\-\*])', '', parts[i])
 
                 # Remove unwanted characters that are not letters, digits, or common punctuation
@@ -2510,8 +3128,13 @@ class BKAITextCleaner:
         # Remove all new lines from the cleaned text
         cleaned_text = cleaned_text.replace('\n','')
 
+        print_debug_bar(self.is_debug)
         # Return the cleaned text as a tuple
         return (cleaned_text,)
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
 
    
 class BKRemoveMaskAtIdx:
@@ -2590,6 +3213,10 @@ class BKRemoveMaskAtIdxSAM3:
 class BKGetNextImgWOCaption:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
+        self.update_cap_extension = ".updatecap"
+        self.update_complete_extension = ".updatecomplete"
+        self.caption_image_extension = ".capimg"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2597,58 +3224,145 @@ class BKGetNextImgWOCaption:
         return {
             "required": {
                 "folder_path": ("STRING", {"default": "","tooltip": "The absolute path of the folder you wish to search through. (Can be anywhere.)"}),
+                "update_prompt_tag": ("STRING",),
+                "mode": (["Delete Prompt Update File", "Rename Prompt Update File"],{"default":"Delete Prompt Update File"}),
+                "caption_tag": ("STRING",),
+                "auto_delete_caption_image": ("BOOLEAN",{"default": True}),
+            },
+            "optional": {
+                "default_prompt" : ("STRING",),
+                "update_prompt" : ("STRING",),
+                
             }
+             
         }
     
     
     @classmethod
-    def IS_CHANGED(self, folder_path):
+    def IS_CHANGED(self, folder_path,auto_delete_caption_image, update_prompt_tag, mode, caption_tag, default_prompt = "", update_prompt = ""):
         return float("nan")
     
-    RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("filename","folder_path", "extension", "remaining", "status",)
+    RETURN_TYPES = ("STRING","STRING","STRING","INT","STRING","STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("filename","folder_path", "extension", "remaining", "status", "system_prompt")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Get Next Img WO Caption"  # Default label text
     OUTPUT_NODE = True
 
-    def process(self, folder_path):
+    #TODO: have an optional input for a "UPDATE" System prompt
+    #TODO: have a optional option for a "NORMAL" System prompt
+    #TODO: make an output for a system prompt
+    #TODO: If the normal system prompt is connected and no update prompt it always outputs the normal system prompt
+    #TODO: If neither system prompt is connected it outputs an empty string
+    #TODO: If the update system prompt is connected it will see if a "NAME.capupdate" file exists for the "NAME.txt" file. IF SO, it will replace the <TAG> in the UPDATE system prompt with the contents of the "NAME.capupdate" file, and if the file not exist, it will default to the connected NORMAL system prompt. And if no NORMAL system prompt is connected, it will return an empty string
+
+
+    def process(self, folder_path,auto_delete_caption_image, update_prompt_tag,caption_tag, mode, default_prompt = "", update_prompt = ""):
         # List of image file extensions we are interested in
-        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
+        
+        system_prompt = default_prompt
         
         # List to store image file names
-        images = []
         images_missing_txt = []
+        prompts_to_update = []
+        extension = ""
         
         # Loop through the folder and get all image files
         for file in os.listdir(folder_path):
-            file_name, file_extension = os.path.splitext(file)
-            # Check if the file is an image based on its extension
-            if file_extension.lower() in image_extensions:
-                images.append(file)
-                # Check if the corresponding .txt file exists
-                txt_file = os.path.join(folder_path, f"{file_name}.txt")
-                if not os.path.exists(txt_file):
+            filename_wo_ext, extension = os.path.splitext(file)
+            # it we found an image in the folder
+            if extension.lower() in self.image_extensions:
+                print("--------------")
+                print(f" file is image [{file}]")
+                
+                txt_filepath = os.path.join(folder_path, f"{filename_wo_ext}.txt")
+                capupdate_filepath = os.path.join(folder_path, f"{filename_wo_ext}{self.update_cap_extension}")
+                print(f"capupdate_filepath[{capupdate_filepath}]")
+                if not os.path.exists(txt_filepath):
+                    print(f"file is image and has no text file[{file}]")
+                    # if the file exists, but not the txt file
                     images_missing_txt.append(file)
+                elif os.path.exists(capupdate_filepath):
+                    print(f"file is image has a text file and has a capupdate[{file}]")
+                    # if the image exists, and the txt file exists, and the capupdate file exists
+                    prompts_to_update.append([filename_wo_ext, extension])
+
+                print(f"file is image and has a text file and no capupdate file [{file}]")
+
+
+        print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+        for updates in prompts_to_update:
+            print(f"files need upadate [{updates}]")
         
         # If no images are found, raise an error
-        if not images:
-            raise ValueError("No image files found in the specified folder.")
+        if not images_missing_txt and not prompts_to_update:
+            raise FileNotFoundError("No images found that need captions or caption updating. All files processed!")
+        
+        current_time = datetime.now().strftime('%I:%M:%S %p')
         
         # If there are images without corresponding .txt files
         if images_missing_txt:
             # Get the first image without a corresponding .txt file
             first_missing_image = images_missing_txt[0]
-            base_name, extension = os.path.splitext(first_missing_image)
-            remaining = len(images_missing_txt)
+            filename_wo_ext, extension = os.path.splitext(first_missing_image)
+            remaining = len(images_missing_txt) + len(prompts_to_update) - 1
             # Create the status message
-            current_time = datetime.now().strftime('%I:%M:%S %p')
-            status = f"Processing [{base_name}] with [{remaining}] remaining. [{current_time}]"
-            return (base_name, folder_path, extension, remaining, status)
+            status = f"Processing [{filename_wo_ext}] with [{remaining}] remaining. [{current_time}]"
+            return (filename_wo_ext, folder_path, extension, remaining, status, system_prompt)
         
+        if prompts_to_update and update_prompt:
+            base_name, img_ext = prompts_to_update[0]
+            base_path = os.path.join(folder_path, base_name)
+            update_file_path = f"{base_path}{self.update_cap_extension}"
+            completed_file_path = f"{base_path}{self.update_complete_extension}"
+            caption_contents = self.read_text_file_contents(f"{base_path}.txt")
+            update_contents = self.read_text_file_contents(update_file_path)
+            system_prompt = update_prompt
+            
+            if update_prompt_tag:
+                system_prompt = system_prompt.replace(update_prompt_tag, update_contents)
+            
+            if caption_tag:
+                system_prompt = system_prompt.replace(caption_tag, caption_contents)
+
+
+            if mode == "Rename Prompt Update File":
+                print(f"Renaming file [{update_file_path}] to [{completed_file_path}]")
+                os.rename(update_file_path, completed_file_path)
+            elif mode == "Delete Prompt Update File":
+                print(f"Deleting prompt update file [{update_file_path}]")
+                os.remove(update_file_path)
+            else:
+                raise ValueError(f"Unknown mode: [{mode}]")
+            
+            if auto_delete_caption_image:
+                caption_image_path = f"{base_path}{self.caption_image_extension}"
+                print(f"Deleting caption image [{caption_image_path}]")
+                os.remove(caption_image_path)
+
+            
+            remaining = len(prompts_to_update) - 1
+            status = f"Updating [{f"{base_name}{img_ext}"}]'s caption with [{remaining}] updates remaining. [{current_time}]"            
+            return (base_name, folder_path, img_ext, remaining, status, system_prompt)
+
         # If all images have corresponding .txt files
-        return ("All images have captions, no missing captions found.", folder_path, "", 0, "All images have captions, no missing captions found.")
-        
+        raise FileNotFoundError("All images have captions, no missing captions found, and all prompts updated")
+    
+    def read_text_file_contents(self, filepath):
+        all_text = ""
+        try:
+            # Try opening the file with UTF-8 encoding
+            with open(filepath, 'r', encoding='utf-8-sig') as file:
+                all_text += file.read().strip() + "\n"
+        except UnicodeDecodeError:
+            # Fallback to a more lenient encoding
+            with open(filepath, 'r', encoding='latin1') as file:
+                all_text += file.read().strip() + "\n"
+        except FileNotFoundError:
+            raise ValueError(f"The file at '{filepath}' was not found.")
+        except Exception as e:
+            raise ValueError(f"An error occurred while reading the file '{filepath}': {e}")
+        return all_text
    
 
 class BKLoopPathBuilder:
@@ -2861,7 +3575,40 @@ class BKRemoveLastFolder:
         
         return(result,)
 
+###################################################################################################################
+# BK Image Sync
+###################################################################################################################
+class BKImageSync:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
 
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "image_a": ("IMAGE", ),
+            "image_b": ("IMAGE", ),
+            "string": ("STRING", ),
+
+            }}
+    
+    @classmethod
+    def IS_CHANGED(self, image_a, image_b, string):
+        return float("nan")
+
+    RETURN_TYPES = ("IMAGE","IMAGE","STRING")
+    RETURN_NAMES = ("IMAGE_A","IMAGE_B","TEXT")
+
+    FUNCTION = "process"
+    CATEGORY = "BKNodes"
+    LABEL = "BK Image Sync"  # Default label text
+
+
+
+    def process(self, image_a, image_b, string):
+        
+        
+        # Return the image, prompt, and other property
+        return (image_a, image_b, string)
 
 class BKPromptSync:
     def __init__(self):
@@ -3389,6 +4136,11 @@ class BKGetNextMissingCheckpoint:
 
             return (checkpoint_model, checkpoint_clip, checkpoint_vae, folder_path, selected_checkpoint_name_wo_ext, combined_path,  remaining_checkpoints,found_checkpoints, unique_paths, selected_checkpoint, status)
 
+
+#########################################################################################################################################
+# BK Dynamic Checkpoints List
+#########################################################################################################################################
+
 class BKDynamicCheckpointsList:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
@@ -3415,8 +4167,8 @@ class BKDynamicCheckpointsList:
     
     #RETURN_TYPES = ("MODEL","CLIP","VAE")  # This specifies that the output will be text
     #RETURN_NAMES = ("MODEL","CLIP", "VAE")
-    RETURN_TYPES = ("MODEL", "CLIP", "VAE", "FLOAT", comfy.samplers.KSampler.SAMPLERS, "STRING", "INT", "STRING", "STRING", "INT")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "VAE", "CFG", "SAMPLER", "NAME", "TOTAL_CHECKPOINTS","UNIQUE_PATHS","SELECTED_CHECKPOINT","CHECKPOINT_NUM")
+    RETURN_TYPES = ("MODEL", "CLIP", "VAE", "FLOAT", comfy.samplers.KSampler.SAMPLERS, "STRING", "INT", "STRING", "STRING", "INT", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "VAE", "CFG", "SAMPLER", "NAME", "TOTAL_CHECKPOINTS","UNIQUE_PATHS","SELECTED_CHECKPOINT","CHECKPOINT_NUM", "CHECKPOINT_LIST",)
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Dynamic Checkpoints"  # Default label text
@@ -3426,6 +4178,12 @@ class BKDynamicCheckpointsList:
     def IS_CHANGED(self, cfg, sampler_name, select, names=None, extra_pnginfo=None):
         return float("nan")
 
+    def parse_text_to_list_of_lines(self, text):
+        return [n.strip() for n in text.splitlines() if n.strip()]
+    
+    def remove_duplicates_in_list(self, list):
+        seen = set()
+        return [item for item in list if not (item in seen or seen.add(item))]
     
     def process(self, default_cfg, default_sampler, select, names=None, extra_pnginfo=None):
         filtered_checkpoints = []
@@ -3438,7 +4196,7 @@ class BKDynamicCheckpointsList:
             filtered_checkpoints = all_checkpoints
         else:
             # Split the names string by lines and strip whitespace
-            name_filters = [n.strip() for n in names.splitlines() if n.strip()]
+            name_filters = self.parse_text_to_list_of_lines(names)
             
             # Process each name filter to handle both formats
             for checkpoint in all_checkpoints:
@@ -3483,6 +4241,15 @@ class BKDynamicCheckpointsList:
 
         # Sort the list alphabetically (case-insensitive)
         filtered_checkpoints.sort(key=str.lower)
+        unique_checkpoint_names_list = []
+        for checkpoint in filtered_checkpoints:
+            unique_checkpoint_names_list.append(os.path.basename(checkpoint))
+
+        unique_checkpoint_names_list = self.remove_duplicates_in_list(unique_checkpoint_names_list)
+        
+        checkpoint_list_text = ""
+        for unique_name in unique_checkpoint_names_list:
+            checkpoint_list_text += f"{unique_name}\n"
 
         # Select a checkpoint based on the seed (rolls over if too large)
         idx = select % len(filtered_checkpoints)
@@ -3515,6 +4282,8 @@ class BKDynamicCheckpointsList:
             unique_paths,
             selected_checkpoint,
             idx,
+            checkpoint_list_text,
+            
         )
 
 def checkpointLoader(ckpt_name):
@@ -3525,6 +4294,7 @@ def checkpointLoader(ckpt_name):
 ##################################################################################################################
 # BK SAVE IMAGE
 ##################################################################################################################
+#TODO: Needs overhaul
 class BKSaveImage:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
@@ -3532,6 +4302,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3539,7 +4310,7 @@ class BKSaveImage:
         return {
             "required": {
                 "images": ("IMAGE", ),
-                "seed": ("INT",{"default": 0, "min": 0, "max": 0xffffffffffffffff, "forceInput": True}),
+                
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
                 "name_suffix": ("STRING", {"default": f'', "multiline": False}),
                 "folder_path": ("STRING", {"default": f'', "multiline": False}),
@@ -3550,9 +4321,11 @@ class BKSaveImage:
                 "is_save_image": ("BOOLEAN", {"default": True, "tooltip": "Node will only save the image if set to true. Else it will not save the image."}),
             },
             "optional": {
+                "seed_optional": ("INT",{"default": 0, "min": 0, "max": 0xffffffffffffffff, "forceInput": True}),
                 "positive_optional": ("STRING",{ "multiline": True, "forceInput": True}, ),
                 "negative_optional": ("STRING",{"multiline": True, "forceInput": True}, ),
                 "other_optional": ("STRING",{"multiline": True, "forceInput": True}, ),
+                "mask_optional": ("MASK",),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO"
@@ -3567,13 +4340,17 @@ class BKSaveImage:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None,  subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True):
+    def IS_CHANGED(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=None):
         return float("nan")
 
     
-    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True):
+    def process(self, images, folder_path, include_workflow, is_save_image, filename=None, subfolder=None, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, extra_pnginfo=None, strip_invalid_chars=True, add_seed_to_name=True, mask_optional=None):
+        print_debug_header(self.is_debug, "BK SAVE IMAGE NODE")
+        
+        
         if filename is None:
             raise ValueError(f"Please enter a name to save the file as.")
+        self.print_debug(f"filename: {filename}")
 
         if strip_invalid_chars:
             filename = re.sub(self.invalid_filename_chars, '', filename)
@@ -3582,6 +4359,7 @@ class BKSaveImage:
             folder_path = re.sub(self.invalid_path_chars, '', folder_path)
             subfolder = re.sub(self.invalid_path_chars, '', subfolder)
 
+        self.print_debug(f"filename: {filename}")
         # Check if the provided path is absolute or relative
         if not os.path.isabs(folder_path):
             folder_path = f"{self.output_dir.strip()}\\{folder_path}"
@@ -3590,8 +4368,15 @@ class BKSaveImage:
             folder_path = os.path.join(folder_path, subfolder)
 
         # only add seed to name if option is toggled
+
+        self.print_debug(f"add_seed_to_name: {add_seed_to_name}")
         if add_seed_to_name:
-            filename = f"{filename}_{seed}"
+            self.print_debug(f"seed_optional: {seed_optional}")
+            if seed_optional:
+                filename = f"{filename}_{seed_optional}"
+            else:
+                filename = f"{filename}_NA"
+        self.print_debug(f"filename: {filename}")
 
         # Define the full file path with the correct file separator for the OS
         filepath = os.path.join(folder_path.strip(), f"{filename.strip()}")
@@ -3602,8 +4387,9 @@ class BKSaveImage:
                 if not os.path.exists(folder_path.strip()):
                     print(f'The path `{folder_path.strip()}` specified doesn\'t exist! Creating directory.')
                     os.makedirs(folder_path, exist_ok=True)  
+            self.print_debug(f"filepath: {filepath}")
 
-            savedpath = self.save_images(images, filepath, extra_pnginfo, include_workflow, name_suffix, positive_optional, negative_optional, seed, other_optional)
+            savedpath = self.save_images(images, filepath, extra_pnginfo, include_workflow, name_suffix, positive_optional, negative_optional, seed_optional, other_optional, mask_optional)
             
             if len(images) == 0:
                 print(f'No images found, nothing to save.')
@@ -3611,43 +4397,68 @@ class BKSaveImage:
                 print(f'Image saved to: {savedpath}')
             else:
                 print(f'Images saved to: {filepath}_###_{name_suffix}.png')
-
+        
+            print_debug_bar(self.is_debug)
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
         else:
+            print_debug_bar(self.is_debug)
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
-        
-    def save_images(self, images, filepath, extra_pnginfo, include_workflow, suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None) -> list[str]:
+
+
+    def save_images(self, images, filepath, extra_pnginfo, include_workflow, suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, mask_optional=None) -> list[str]:
         
         # Having img_count outside the loop allows us to pickup where we left off for the next image
         img_count = 1
 
-        if filepath is not None and suffix is not None:
-            filepath = f"{filepath}_{suffix}"
+        if filepath is not None:
+            if suffix is None:
+                suffix = suffix.strip()
+                if suffix != "":
+                    filepath = f"{filepath}_{suffix}"
+            
 
-        
+        self.print_debug(f"filepath: {filepath}")
+
         for image in images:
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
 
+            # If a mask is provided and is not empty, combine the mask with the image to create an alpha channel
+            if mask_optional is not None and mask_optional.sum() > 0:  # Check if mask is not empty
+                # Ensure the mask is a binary mask (values should be 0 or 1)
+                mask = mask_optional.cpu().numpy().astype(np.uint8) * 255  # scale to 255 for transparency
+
+                # Invert the mask: 1 (transparent) becomes 0, 0 (opaque) becomes 255
+                inverted_mask = 255 - mask  # Invert mask values: 1 -> 0, 0 -> 255
+
+                # Convert the image to RGBA (Red, Green, Blue, Alpha)
+                img = img.convert("RGBA")
+                img_array = np.array(img)
+
+                # Replace the alpha channel with the inverted mask (fully transparent where mask is 1, opaque where mask is 0)
+                img_array[..., 3] = inverted_mask  # Set the alpha channel based on the inverted mask
+
+                img = Image.fromarray(img_array)
 
             # Create file path with extension
             filepath_w_ext = filepath + ".png"
-
             numbered_filepath_w_ext = filepath_w_ext
-
+            
             # If the file already exists, add a number to the name
             if os.path.exists(filepath_w_ext):
                 # Keep increasing the filename's number until we get one that does not exist
                 while os.path.exists(numbered_filepath_w_ext):
                     # Generate new filename with incremented img_count
+                    
                     numbered_filepath = f"{filepath}_{img_count:06d}"
                     numbered_filepath_w_ext = f"{numbered_filepath}.png"
+                    self.print_debug(f"numbered_filepath: {numbered_filepath}")
+                    self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
                     img_count += 1  # Increment the image count
 
             # Final filepath (with number if necessary)
             filepath_w_ext = numbered_filepath_w_ext
-            
-           
+            self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
 
             metadata = PngInfo()
             if positive_optional is not None:
@@ -3655,7 +4466,7 @@ class BKSaveImage:
 
             if negative_optional is not None:
                 metadata.add_text("negative", negative_optional)
-            
+
             if seed_optional is not None:
                 metadata.add_text("seed", str(seed_optional))
 
@@ -3667,12 +4478,184 @@ class BKSaveImage:
                         for x in extra_pnginfo:
                             metadata.add_text(x, json.dumps(extra_pnginfo[x]))
 
-
-            
-
             img.save(filepath_w_ext, pnginfo=metadata, optimize=True)
             img_count += 1
         return filepath_w_ext
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+
+##################################################################################################################
+# BK SAVE CAPTION IMAGE
+##################################################################################################################
+#TODO: Needs overhaul
+class BKSaveCaptionImage:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.is_debug = True
+        self.caption_image_ext = ".capimg"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image": ("IMAGE", ),
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
+                "folder_path": ("STRING", {"default": f'', "multiline": False}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("IMAGE","full_path")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Save Caption Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, folder_path, filename):
+        return float("nan")
+
+    
+    def process(self, image, folder_path, filename):
+        print_debug_header(self.is_debug, "BK SAVE CAPTION IMAGE")
+        
+        
+        if filename is None:
+            raise ValueError(f"Please enter a name to save the file as.")
+        self.print_debug(f"filename: {filename}")
+
+        if folder_path is None:
+            raise ValueError(f"Please enter a folder path to save the file as.")
+
+        if not os.path.isabs(folder_path):
+            folder_path = f"{self.output_dir.strip()}\\{folder_path}"
+
+        # Define the full file path with the correct file separator for the OS
+        full_file_path = os.path.join(folder_path.strip(), f"{filename.strip()}{self.caption_image_ext}")
+
+
+        # Ensure the output directory exists
+        if folder_path.strip() != '':
+            if not os.path.exists(folder_path.strip()):
+                print(f'The path `{folder_path.strip()}` specified doesn\'t exist! Creating directory.')
+                os.makedirs(folder_path, exist_ok=True) 
+
+        self.print_debug(f"filepath: {full_file_path}")
+
+        savedpath = self.save_images(image, full_file_path)
+
+
+        print_debug_bar(self.is_debug)
+        return image, savedpath
+
+
+
+    def save_images(self, images, full_image_path) -> str:
+
+        if not full_image_path:
+            raise ValueError(f"Filepath is None when  or empty when saving caption image.")
+        
+        if images is None:
+            raise ValueError(f"Images is None when saving caption image.")
+        
+        if len(images) == 0:
+            raise ValueError(f"No images found in input!")
+
+        # Since we verified images is not 0, it must have one image, we only process the first image for this node.
+        image = images[0]
+
+        # Swap image from GPU to CPU, Normalize and Clamp img values to 0-255, convert into PIL (Python Image Library)
+        #   image which is able to hold metadata, convert to 8bit image (standard)
+        numpy_array = 255. * image.cpu().numpy()
+        pil_img = Image.fromarray(np.clip(numpy_array, 0, 255).astype(np.uint8))
+
+        # Since we are saving the image with a different ext, we need to force it to PNG format, we use no compression,
+        #   And allow PIL to attempt to re-arrange the data to make the file smaller without losing quality (optimize=True)
+        pil_img.save(full_image_path, format="PNG", compression_level=0, optimize = True)
+
+        return full_image_path
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+
+
+
+#################################################################################################################
+# BK SAVE PATH FORMATTER
+##################################################################################################################
+#TODO: Needs overhaul
+class BKPathFormatter:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.is_debug = False
+
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "filename": ("STRING", {"default": f'image', "multiline": False}),
+            },
+            "optional": {
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "suffix": ("STRING", {"default": f'', "multiline": False}),
+                "subfolder": ("STRING", ),
+                "extension": ("STRING", ),
+                "folder_path": ("STRING", ),
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("path_string",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Path Formatter"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self,  filename,folder_path = None, subfolder = None, seed = None, suffix = None, extension = None):
+        return float("nan")
+
+    
+    def process(self,  filename, folder_path = None, subfolder = None, seed = None, suffix = None, extension = None):
+        print_debug_header(self.is_debug, "BK SAVE PATH FORMATTER")
+
+        if not os.path.isabs(folder_path):
+            folder_path = os.path.join(self.output_dir.strip(), folder_path.strip())
+        
+        if subfolder:
+            folder_path = os.path.join(folder_path, subfolder)
+        
+        if seed:
+            filename = f"{filename.strip()}_{seed}"
+
+        if suffix:
+            filename = f"{filename.strip()}_{suffix.strip()}"
+        
+        if extension:
+            filename = f"{filename.strip()}.{extension.strip('.').strip()}"
+        
+        fullpath = os.path.join(folder_path.strip(), filename.strip())
+
+        print_debug_bar(self.is_debug)
+        return (fullpath,)
+
+
+
+
     
 class BKGetLastFolderName:
     def __init__(self):
@@ -3717,9 +4700,16 @@ class BKGetLastFolderName:
 
         return (path, foldername)
 
+##################################################################################################################
+# BK Get Matching Mask
+##################################################################################################################
+
 class BKGetMatchingMask:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self.min_mask_size = 64
+        self.is_debug = False
+
     @classmethod
     def INPUT_TYPES(cls):
         # Define the types of inputs your node accepts (single "text" input)
@@ -3727,47 +4717,163 @@ class BKGetMatchingMask:
             "required": {
                 "all_masks": ("MASK",),
                 "ref_mask": ("MASK",),
-                "is_notify_on_missing_mask": ("BOOLEAN", {"default": True, "tooltip": "If true, will throw an error if the ref mask is missing or empty. Will also display name of image."}),
+                "notify_on_no_match": ("BOOLEAN", {"default": True, "tooltip": "If true, will throw an error if the ref mask is missing or empty. Will also display name of image."}),
             },
             "optional": {
-                 "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
+                "user_mask": ("MASK",),
+                "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
             },
             "hidden": {
             },
         }
     
-    RETURN_TYPES = ("MASK", "BOOLEAN",)  # This specifies that the output will be text
-    RETURN_NAMES = ("found_mask", "is_mask_found")
+    RETURN_TYPES = ("MASK", "MASK", "MASK", "BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("matching_mask", "non_matching_mask", "combined_mask", "is_mask_found")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
-    LABEL = "BK Save Image"  # Default label text
+    LABEL = "BK Get Matching Mask"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, all_masks, ref_mask, is_notify_on_missing_mask, image_name = "UNKNOWN"):
+    def IS_CHANGED(self, all_masks, ref_mask, notify_on_no_match, image_name = "UNKNOWN", user_mask = None):
         return float("nan")
 
-    
-    def process(self, all_masks, ref_mask, is_notify_on_missing_mask, image_name = "UNKNOWN"):
-        threshold = 0.5
-        binary_ref_mask = ref_mask > threshold
+    def replace_nontype_with_default_comfyui_mask(self, mask):
+        if mask is None:
+            return self.create_empty_opaque_3d_image(self.min_mask_size, self.min_mask_size)
+        else:
+            return mask
+        
+    def process(self, all_masks, ref_mask, notify_on_no_match, image_name = "UNKNOWN", user_mask = None):
+        print_debug_header(self.is_debug, "BK GET MATCHING MASK")
+        
+        # Prevent errors by fixing NoneType mask values to standard ComfyUI default empty mask
+        user_mask  = self.replace_nontype_with_default_comfyui_mask(user_mask)
+        all_masks  = self.replace_nontype_with_default_comfyui_mask(all_masks)
+        ref_mask  = self.replace_nontype_with_default_comfyui_mask(ref_mask)
 
-        # EMPTY ref mask
-        if not torch.any(binary_ref_mask):
-            found_mask = torch.zeros_like(ref_mask)
-            if is_notify_on_missing_mask:
-                print(f"No mask found in image [{image_name}]")
-            return (found_mask, False)
+        # Ensure all masks are 3D and not 4D
+        user_mask = self.convert_4d_to_3d(user_mask)
+        ref_mask = self.convert_4d_to_3d(ref_mask)
+        all_masks = self.convert_4d_to_3d(all_masks)
+
+        # Flatten masks that are a set of masks instead of one mask for processing
+        if self.image_batch_size(user_mask) > 1:
+            print(f"BKGetMathchingMask: WARNING: user_mask was a set of masks, not a single mask. Flattening masks to one mask.")
+            self.flatten_all_batched_masks_to_one_mask(user_mask)
+
+        if self.image_batch_size(ref_mask) > 1:
+            print(f"BKGetMathchingMask: WARNING: ref_mask was a set of masks, not a single mask. Flattening masks to one mask.")
+            ref_mask = self.flatten_all_batched_masks_to_one_mask(ref_mask)
+
+        binary_ref_mask = self.convert_to_binary_mask(ref_mask)
+        
+
+        list_of_non_matching_masks = []
+        found_mask = None
 
         # NON-empty ref mask
+        non_matching_count = 0
         for mask in all_masks:
-            binary_mask = mask > threshold
+            binary_mask = self.convert_to_binary_mask(mask)
             if torch.all(binary_ref_mask <= binary_mask):
-                return (mask, True)
+                self.print_debug(f"Found a matching mask!")
+                found_mask = binary_mask.unsqueeze(0)
+            else:
+                non_matching_count += 1
+                list_of_non_matching_masks.append(binary_mask)
+        
+        
+        
+        # If any masks were found that did not match, combine them, else return an empty mask
+        if len(list_of_non_matching_masks) > 0:
+            non_matching_masks = self.recombine_a_list_of_masks(list_of_non_matching_masks)
+            non_matching_masks = self.flatten_all_batched_masks_to_one_mask(non_matching_masks)
+            combined_mask = self.combine_masks(user_mask, non_matching_masks)
+        else:
+            non_matching_masks = self.create_empty_opaque_3d_image(self.min_mask_size, self.min_mask_size)
+            combined_mask = user_mask
 
-        # No match
-        return (torch.zeros_like(ref_mask), False)
+        # If a matching mask was not found, return an empty mask
+        is_found = True
+        if found_mask is None:
+            if notify_on_no_match:
+                ValueError(f"BKGetMathchingMask: No matching mask found, and notify was set to true.")
+            is_found = False
+            found_mask = self.create_empty_opaque_3d_image(self.min_mask_size, self.min_mask_size)
+
+        
+        
+
+        self.print_debug(f"found_mask.size()[{found_mask.size()}]")
+        self.print_debug(f"non_matching_masks.size()[{non_matching_masks.size()}]")
+        self.print_debug(f"combined_mask.size()[{combined_mask.size()}]")
+        self.print_debug(f"non_matching_count[{non_matching_count}]")
+
+        print_debug_bar(self.is_debug)
+        return (found_mask, non_matching_masks, combined_mask, is_found)
     
+    def combine_masks(self, user_mask, non_matching_mask):
+        # Ensure the masks are tensors
+        if not isinstance(user_mask, torch.Tensor) or not isinstance(non_matching_mask, torch.Tensor):
+            raise TypeError("Both mask1 and mask2 must be torch tensors.")
+        
+        # Check if the masks have the same shape
+        if user_mask.shape != non_matching_mask.shape:
+            print(f"BKGetMatchingMask: WARNING: Could not merge the user_mask and the non_matching masks. They have different sizes. They must be the same size to merge them. Returning only the user_mask.")
+            return user_mask
+
+        # Combine the masks by taking the element-wise maximum
+        combined_mask = torch.maximum(user_mask, non_matching_mask)
+
+        return combined_mask
+    
+    def recombine_a_list_of_masks(self, masks):
+        return torch.stack(masks)
+    
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+    
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def convert_4d_to_3d(self, tensor):
+        if len(tensor.size()) == 4:
+            return tensor.squeeze(3)
+        else:
+            return tensor
+        
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
+    
+    def convert_to_binary_mask(self, mask):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Create a new mask with values set to 1 if the pixel is greater than 0
+        mask[mask > 0] = 1
+
+        return mask
+
+
+##################################################################################################################
+# BK Body Ratios
+##################################################################################################################
+
+
 class BKBodyRatios:
     def __init__(self):
         # Initialize running averages
@@ -3863,7 +4969,7 @@ class BKCropAndPad:
         self.minimum_image_size = 64
         # This ratio comes from testing 30,000+ real single subject images TBD
         # self.head_clearance_ratio = 0.18 
-        self.is_debug = True
+        self.is_debug = False
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3873,6 +4979,7 @@ class BKCropAndPad:
                 "image": ("IMAGE",),
                 "person_mask": ("MASK",),
                 "desired_size": ("INT",),
+                "outpaint_padding": ("INT",),
             },
             "optional": {
                 "image_name": ("STRING",{ "multiline": True, "forceInput": True, "tooltip":"Image name displayed in error message if ref image is missing. (Optional)"}, ),
@@ -3883,14 +4990,14 @@ class BKCropAndPad:
         }
     
     RETURN_TYPES = ("IMAGE", "MASK","MASK","MASK","MASK","BOOLEAN")  # This specifies that the output will be text
-    RETURN_NAMES = ("cropped_image", "cropped_person_mask", "cropped_user_mask", "cropped_outpaint_mask", "combined_mask", "self.is_need_outpaint")
+    RETURN_NAMES = ("cropped_image", "cropped_person_mask", "cropped_user_mask", "cropped_outpaint_mask", "combined_mask", "is_need_outpaint")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Crop And Pad"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, image, person_mask, desired_size, image_name = "NA", user_mask = None):
+    def IS_CHANGED(self, image, person_mask, desired_size, outpaint_padding, image_name = "NA", user_mask = None):
         print(f"BKCropAndPad IS_CHANGED called")
         return float("nan")
     
@@ -3899,11 +5006,21 @@ class BKCropAndPad:
     
     def smallest_dimension_of_image(self, image):
         return min(self.image_height(image), self.image_width(image))
+    
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
+    
+
 
 # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-    def process(self, image, person_mask, desired_size, image_name="NA", user_mask=None):
-        self.print_debug("##################################################################################################")
+    def process(self, image, person_mask, desired_size, outpaint_padding, image_name="NA", user_mask=None):
+        print_debug_header(self.is_debug,"BK CROP AND PAD")
         # Initialize output variables and constants
+
+        if self.image_batch_size(person_mask) > 1:
+            #TODO: Enable mask flatening of multi masks.
+            print(f"BKCropAndPad: WARNING: Recieved multiple batched masks for person masks. Flattening them down to one mask.")
+            person_mask = self.flatten_all_batched_masks_to_one_mask(person_mask)
 
         self.print_debug(f"desired_size before clamp[{desired_size}]")
 
@@ -3925,13 +5042,16 @@ class BKCropAndPad:
 
         # Get the bounding box of the person from the mask
         person_bounding_box = self.get_person_bounding_box(person_mask)
+        image = self.draw_bounding_box_on_image(image, person_bounding_box, color=(1.0, 0.0, 0.0))
+        
         crop_box = self.get_crop_bounding_box(person_bounding_box, image, desired_size)
+        image = self.draw_bounding_box_on_image(image, crop_box, color=(0.0, 1.0, 0.0))
 
         self.print_box(person_bounding_box, label="PersonBox")
         self.print_box_values(crop_box, label="Crop Box")
 
-        is_need_vertical_outpaint = self.is_crop_box_wider_than_image(image, crop_box)
-        is_need_horizontal_outpaint = self.is_crop_box_taller_than_image(image, crop_box)
+        is_need_vertical_outpaint = self.is_crop_box_taller_than_image(image, crop_box)
+        is_need_horizontal_outpaint = self.is_crop_box_wider_than_image(image, crop_box)
 
         if is_need_horizontal_outpaint:
             self.flip_horizontal_pad_side()
@@ -3943,9 +5063,20 @@ class BKCropAndPad:
 
         cropped_image = self.crop_4d_image_and_pad_white(image, crop_box)
         cropped_person_mask = self.crop_3d_mask_and_pad_opaque(person_mask, crop_box)
-        empty_outpaint_center_part_mask = self.create_empty_3d_transparent_mask(self.image_height(image), self.image_width(image))
+
+        # resize empty outpaint mask by padding amount in the direction in the axis of the outpaint
+        self.print_debug(f"is_need_vertical_outpaint: {is_need_vertical_outpaint}")
+        self.print_debug(f"is_need_horizontal_outpaint: {is_need_horizontal_outpaint}")
+        self.print_debug(f"height: {self.image_height(image)}")
+        self.print_debug(f"width: {self.image_width(image)}")
+        height_for_padding = self.add_padding(self.image_height(image), outpaint_padding, is_need_vertical_outpaint)
+        width_for_padding = self.add_padding(self.image_width(image), outpaint_padding, is_need_horizontal_outpaint)
+        self.print_debug(f"height: {height_for_padding}")
+        self.print_debug(f"width: {width_for_padding}")
+
+        empty_outpaint_center_part_mask = self.create_empty_3d_transparent_mask(height_for_padding, width_for_padding)
         cropped_outpaint_mask = self.crop_3d_mask_and_pad_transparent(empty_outpaint_center_part_mask, crop_box)
-        
+
         if self.is_mask_empty(user_mask):
             self.print_debug(f"user_mask empty")
             combined_mask = cropped_outpaint_mask
@@ -3961,14 +5092,43 @@ class BKCropAndPad:
         cropped_outpaint_mask = self.convert_4d_to_3d(cropped_outpaint_mask)
         combined_mask = self.convert_4d_to_3d(combined_mask)
 
-        self.print_debug("##################################################################################################")
+        
+
+        print_debug_bar(self.is_debug)
         return cropped_image, cropped_person_mask, cropped_user_mask, cropped_outpaint_mask, combined_mask, is_need_outpaint
     
+    def add_padding(self, original_size, padding, is_need_outpaint):
+        if is_need_outpaint:
+            return original_size - padding
+        else:
+            return original_size
+
+    def draw_bounding_box_on_image(self, image, box, color=(1.0, 1.0, 0.0)):
+        
+        if not self.is_debug:
+            return image
+        
+        # Draw Center Point in green
+        image = self.draw_circle_rgb(image, self.box_center_x(box), self.box_center_y(box), color, 10)  # Green dot at center of person box
+        
+        #Draw Anchor Point in blue
+        image = self.draw_circle_rgb(image, self.box_left(box), self.box_top(box), color, 20)  # Blue dot at top-left of person box
+
+        return image
+
+    def box_center_x(self, box):
+        return box[1] + box[3] // 2
+    
+    def box_center_y(self, box):
+        return box[0] + box[2] // 2
+    
     def is_crop_box_taller_than_image(self, image, crop_box):
-        return self.image_height(image) > self.box_height(crop_box)
+        self.print_debug(f"if image_height[{self.image_height(image)}] > box_height[{self.box_height(crop_box)}] vert outpaint needed") 
+        return self.box_height(crop_box) > self.image_height(image)
     
     def is_crop_box_wider_than_image(self, image, crop_box):
-        return self.image_width(image) > self.box_width(crop_box)
+        self.print_debug(f"if image_width[{self.image_width(image)}] > box_width[{self.box_width(crop_box)}] horiz outpaint needed")
+        return self.box_width(crop_box) > self.image_width(image)
     
     def clamp_desired_size(self, desired_size, minimum, maximum):
         return max(min(desired_size, maximum), minimum)
@@ -4049,9 +5209,12 @@ class BKCropAndPad:
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
         if not torch.any(person_mask):
             raise ValueError("The person mask is empty or has no non-zero elements.")
+        
+
 
         # Get non-zero indices of the person_mask (where the person is located)
         # Person_mask is a set of masks, not a single mask, so we take the first one
+        # each indice is in (y, x) format
         non_zero_indices = torch.nonzero(person_mask[0])
 
         # If no non-zero values exist, raise an error
@@ -4071,12 +5234,12 @@ class BKCropAndPad:
         height = y_max.item() - y_min.item() + 1
 
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-        return (left, top, height, width)
+        return (top, left, height, width)
 
     def box_horizontal_center(self, box):
         return self.box_left(box) + (self.box_width(box) // 2)
 
-    def box_vertical_center(self, box):
+    def box_top_anchor_point(self, box):
         return self.box_top(box) + (self.box_height(box) // 2)
 
     def image_height(self, image_3d_4d):
@@ -4108,15 +5271,63 @@ class BKCropAndPad:
         # NOTE: the flipper methods are pass by reference, and called inside of the _find_center_of_box method
         left = self.find_box_anchor_point(self.image_width(image), 
                                                       size, 
-                                                      self.box_horizontal_center(person_bounding_box),
+                                                      self.box_left(person_bounding_box),
                                                       self.box_width(person_bounding_box))
 
         top = self.find_box_anchor_point(self.image_height(image), 
                                                       size, 
-                                                      self.box_vertical_center(person_bounding_box),
+                                                      self.box_top(person_bounding_box),
                                                       self.box_height(person_bounding_box))
 
         return (top, left, size, size)
+    
+    def draw_circle_rgb(self,
+        images: np.ndarray,
+        x: int,
+        y: int,
+        color: tuple,
+        radius: int
+    ) -> np.ndarray:
+        """
+        Draw a filled circle on a batch of RGB images.
+
+        Parameters
+        ----------
+        images : np.ndarray
+            Image tensor of shape [batch_size, height, width, 3]
+        x : int
+            X coordinate (column)
+        y : int
+            Y coordinate (row)
+        color : tuple or list
+            RGB color (R, G, B)
+        radius : int
+            Circle radius in pixels
+
+        Returns
+        -------
+        np.ndarray
+            Modified image tensor
+        """
+
+
+
+        assert images.ndim == 4 and images.shape[-1] == 3, \
+            "Expected image shape [B, H, W, 3]"
+
+        batch_size, height, width, _ = images.shape
+
+        # Create coordinate grid
+        yy, xx = np.ogrid[:height, :width]
+
+        # Circle mask
+        mask = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
+
+        # Apply color to all images in batch
+        for c in range(3):
+            images[:, mask, c] = color[c]
+
+        return images
 
     def find_box_anchor_point(self, image_size, box_size, person_anchor_point, person_size):
 
@@ -4140,15 +5351,22 @@ class BKCropAndPad:
         return False
     
     def get_closest_anchor_point_within_bounds(self, image_size, box_size, person_anchor_point, person_size):
+        self.print_debug(f"================================== GET CLOSEST ANCHOR POINT ==================================")
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
         person_center = person_anchor_point + (person_size // 2)
+        self.print_debug(f"person_anchor_point[{person_anchor_point}] + (person_size[{person_size}] // 2) = person_center[{person_center}]")
         ideal_anchor_point = person_center - (box_size // 2)
+        self.print_debug(f"ideal_anchor_point = person_center[{person_center}] - (box_size[{box_size}] // 2) = ideal_anchor_point[{ideal_anchor_point}]")
 
         lower_bound = 0
+        self.print_debug(f"lower_bound = 0")
         upper_bound = image_size - box_size
+        self.print_debug(f"upper_bound = image_size[{image_size}] - box_size[{box_size}] = upper_bound[{upper_bound}]")
 
+        result = self.clamp(ideal_anchor_point, lower_bound, upper_bound)
+        self.print_debug(f"clamp(ideal_anchor_point[{ideal_anchor_point}], lower_bound[{lower_bound}], upper_bound[{upper_bound}]) = result[{result}]")
         # NOTE: image tensor coordinates origin is at TOP-LEFT corner
-        return self.clamp(ideal_anchor_point, lower_bound, upper_bound)
+        return result
 
     def clamp(self, value, lower, upper):
         return max(min(value, upper), lower)
@@ -4412,8 +5630,632 @@ class BKCropAndPad:
         return self.image_height(src_image) < self.image_height(dest_image)
    
 
+##################################################################################################################
+# BK Mask Square And Pad
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKMaskSquareAndPad:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "multi_masks": ("MASK",),
+                "padding": ("INT", {"default": 0}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK","INT","BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("single_combined_mask","original_count","has_mask")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Mask Square And Pad"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, multi_masks, padding):
+        return float("nan")
 
 
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, multi_masks, padding):
+        print_debug_bar(self.is_debug)
+        #NOTE: Masks are [batch_size, height, width]
+
+        if multi_masks is None:
+            multi_masks = self.create_empty_opaque_3d_image(self.minimum_image_size, self.minimum_image_size)
+            print("BK Mask Square And Pad: WARNING: Input mask was NONE. This will break other nodes. Correcting issue, and returning ComfyUI Default empty mask.")
+            return (multi_masks, 0, False)
+        
+        # Ensure masks are 3 dimensional before processing. 4 dimensional masks are usually images.
+        multi_masks = self.convert_4d_to_3d(multi_masks)
+            
+
+        count = self.image_batch_size(multi_masks)
+        
+
+        if self.is_mask_empty(multi_masks):
+            return (multi_masks, count, False)
+        
+        all_modified_masks = []
+        
+        # We do this before we merge the masks, so it doesn't just create one large square mask over all masks.
+        for mask in multi_masks:
+            bool_mask = self.convert_mask_to_boolean(mask)
+            squared_padded_masks = self.square_and_pad(bool_mask, padding)
+            all_modified_masks.append(squared_padded_masks)
+            
+
+        all_modified_masks = self.recombine_a_list_of_masks(all_modified_masks)
+        modified_mask = self.flatten_all_batched_masks_to_one_mask(all_modified_masks)
+
+
+
+        has_mask = not self.is_mask_empty(modified_mask)
+
+
+        print_debug_bar(self.is_debug)
+        return (modified_mask, count, has_mask)
+    
+    def recombine_a_list_of_masks(self, masks):
+        return torch.stack(masks)
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+    
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def convert_4d_to_3d(self, tensor):
+        if len(tensor.size()) == 4:
+            return tensor.squeeze(3)
+        else:
+            return tensor
+        
+    def flatten_all_batched_masks_to_one_mask(self, masks):
+        return masks.max(dim=0, keepdim=True)[0]
+    
+    def convert_mask_to_boolean(self, mask):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Create a new mask with values set to 1 if the pixel is greater than 0
+        mask[mask > 0] = 1
+
+        return mask
+
+    def square_and_pad(self, mask, padding):
+
+        # Ensure the mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError("Input mask must be a torch.Tensor.")
+
+        # Find the indices of all non-zero pixels (i.e., the foreground pixels)
+        non_zero_indices = torch.nonzero(mask)
+
+        if non_zero_indices.size(0) == 0:
+            # If there are no non-zero pixels, return the mask as is
+            return mask
+
+        # Get the min and max row and column indices to form the bounding box
+        min_row = non_zero_indices[:, 0].min().item()
+        max_row = non_zero_indices[:, 0].max().item()
+        min_col = non_zero_indices[:, 1].min().item()
+        max_col = non_zero_indices[:, 1].max().item()
+
+        # Apply padding to the bounding box
+        min_row = max(min_row - padding, 0)  # Ensure min_row doesn't go below 0
+        max_row = min(max_row + padding, mask.shape[0] - 1)  # Ensure max_row doesn't exceed height
+        min_col = max(min_col - padding, 0)  # Ensure min_col doesn't go below 0
+        max_col = min(max_col + padding, mask.shape[1] - 1)  # Ensure max_col doesn't exceed width
+
+        # Fill the bounding box area with 1
+        mask[min_row:max_row+1, min_col:max_col+1] = 1
+
+        return mask
+
+##################################################################################################################
+# BK Mask Test
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKMaskTest:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "num_of_masks": (["Is Equal To", "Is Greater Than", "Is Less Than"], {"default":"Is Greater Than"}),
+                "value": ("INT", {"default":0}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK", "INT", "BOOLEAN", "BOOLEAN")  # This specifies that the output will be text
+    RETURN_NAMES = ("mask", "count", "boolean_has_mask", "boolean_operation_result")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Mask Test"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, mask, num_of_masks, value):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, mask, num_of_masks, value):
+        print_debug_header(self.is_debug, "BK MASK TEST")
+        
+        is_has_mask = not self.is_mask_empty(mask)
+        count = self.image_batch_size(mask)
+
+        if count == 1 and not is_has_mask:
+            count = 0
+
+        if num_of_masks == "Is Equal To":
+            result = (count == value)
+        elif num_of_masks == "Is Greater Than":
+            result = (count > value)
+        elif num_of_masks == "Is Less Than":
+            result = (count < value)
+        else:
+            raise ValueError(f"Unsupported operation: {num_of_masks}")
+
+        print_debug_bar(self.is_debug)
+        return (mask, count, is_has_mask, result)
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+    def image_batch_size(self, image_3d_4d):
+        return image_3d_4d.size()[0]
+
+
+##################################################################################################################
+# BK Bool Not
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKBoolNot:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "boolean": ("BOOLEAN",),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("not_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Has Mask"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, boolean):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, boolean):
+        print_debug_header(self.is_debug, "BK BOOLEAN NOT")
+        
+        not_boolean = not boolean
+
+        print_debug_bar(self.is_debug)
+        return (not_boolean,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+##################################################################################################################
+# BK Bool Operation
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKBoolOperation:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "bool_a": ("BOOLEAN",),
+                "operation": (["AND", "OR", "XOR"], {"default":"AND"}),
+                "bool_b": ("BOOLEAN",),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("result_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Boolean Operation"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, bool_a, operation, bool_b):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, bool_a, operation, bool_b):
+        print_debug_header(self.is_debug, "BK BOOLEAN OPERATION")
+        
+        if operation == "AND":
+            result_boolean = bool_a and bool_b
+        elif operation == "OR":
+            result_boolean = bool_a or bool_b
+        elif operation == "XOR":
+            result_boolean = bool_a != bool_b
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+
+        print_debug_bar(self.is_debug)
+        return (result_boolean,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+##################################################################################################################
+# BK Image Size Test
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKImageSizeTest:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "is_image": (["Greater Than", "Less Than", "Equal To", "Greater Than Or Equal To", "Less Than Or Equal To"],),
+                "height": ("INT", {"default":"1024", "min": 1}),
+                "width": ("INT", {"default":"1024", "min": 1}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE", "BOOLEAN",)  # This specifies that the output will be text
+    RETURN_NAMES = ("image", "result_boolean",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Image Size Test"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, is_image, height, width):
+        return float("nan")
+
+    def image_height(self, image):
+        return image.size()[1]
+
+    def image_width(self, image):
+        return image.size()[2]
+    
+    def is_image_greater_than(self, image, height, width):
+        return self.image_height(image) > height and self.image_width(image) > width
+    
+    def is_image_less_than(self, image, height, width):
+        return self.image_height(image) < height and self.image_width(image) < width
+    
+    def is_image_equal_to(self, image, height, width):
+        return self.image_height(image) == height and self.image_width(image) == width
+    
+# NOTE: Image tensor coordinates origin is at TOP-LEFT corner
+# NOTE: Image tensor is [batch_size, height, width, channels]
+# NOTE: Mask tensor is [batch_size, height, width]
+    def process(self, image, is_image, height, width):
+        print_debug_header(self.is_debug, "BK BOOLEAN OPERATION")
+
+
+        if is_image == "Greater Than":
+            result_boolean = self.is_image_greater_than(image, height, width)
+        elif is_image == "Less Than":
+            result_boolean = self.is_image_less_than(image, height, width)
+        elif is_image == "Equal To":
+            result_boolean = self.is_image_equal_to(image, height, width)
+        elif is_image == "Greater Than Or Equal To":
+            result_boolean = self.is_image_greater_than(image, height, width) or self.is_image_equal_to(image, height, width)
+        elif is_image == "Less Than Or Equal To":
+            result_boolean = self.is_image_less_than(image, height, width) or self.is_image_equal_to(image, height, width)
+        else:
+            raise ValueError(f"Unsupported operation: {is_image}")
+
+        print_debug_bar(self.is_debug)
+        return (image, result_boolean,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+    
+##################################################################################################################
+# BK Add Mask Box
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKAddMaskBox:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+        self.ONLY_IF_MISSING_MODES = {
+            "If No Mask In Region",
+            "If No Mask In Region And Vertical Image",
+            "If No Mask In Region And Horizontal Image",
+            "If No Mask In Region And Square Image",
+        }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "top":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "left":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "width":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "height":("FLOAT",{"min": 0.0, "max": 100.0}),
+                "apply":(["Always", "If Input Mask Empty","If No Mask In Region","If No Mask In Region And Vertical Image","If No Mask In Region And Horizontal Image","If No Mask In Region And Square Image"], {"default":"Always Always"}),
+            },
+            "optional": {
+                "mask":("MASK",),
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK","BOOLEAN", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("mask", "is_applied", "status")
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Add Mask Box"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, top, left, height, width, apply, mask=None):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, top, left, height, width, apply, mask=None):
+
+        print_debug_header(self.is_debug, "BK ADD MASK BOX")
+        
+        # Assuming mask is a 3D tensor with dimensions [batch_size, height, width]
+        # If mask is None, create a new one that is the same size as the image
+        if mask is None:
+            raise ValueError("BKAddMaskBox: Mask must be provided. Must know size of image to create mask for.")
+        
+        # Get image size (height, width)
+        _, img_height, img_width = mask.shape  # Image is assumed to be [batch_size, height, width]
+        
+        # Convert percentages to actual pixel values
+        top_pixel = int(top / 100.0 * img_height)
+        left_pixel = int(left / 100.0 * img_width)
+        height_pixel = int(height / 100.0 * img_height)
+        width_pixel = int(width / 100.0 * img_width)
+
+        # Bound the mask area within the image dimensions
+        bottom_pixel = min(top_pixel + height_pixel, img_height)
+        right_pixel = min(left_pixel + width_pixel, img_width)
+
+        is_applied = True
+        status = "BKAddMaskBox: Box applied to mask"
+
+        if apply == "If No Mask In Region And Vertical Image":
+            if self.image_height(mask) < self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is less than its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Vertical Image'. It is not a vertical image. Skipping")
+            
+        if apply == "If No Mask In Region And Horizontal Image":
+            if self.image_height(mask) > self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is greater than its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Horizontal Image'. It is not a horizontal image. Skipping")
+
+        if apply == "If No Mask In Region And Square Image":
+            if self.image_height(mask) != self.image_width(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Image height [{self.image_height(mask)}] is not equal its width [{self.image_width(mask)}] in mode 'If No Mask In Region And Square Image'. It is not a square image. Skipping")
+        
+        if apply == "If Input Mask Empty":
+            if not self.is_mask_empty(mask):
+                return  self.skip(mask, f"BKAddMaskBox: Input mask is not empty with mode 'If Input Mask Empty'. Skipping")
+        
+        # Check if we are in "Only If Missing" mode
+        if apply in self.ONLY_IF_MISSING_MODES:
+            # Check if the region already has a mask applied (non-zero region)
+            if mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel].sum() > 0:
+                is_applied = False
+                status = "BKAddMaskBox: Region already has a mask applied. Skipping."
+                print(status)
+                return (mask, is_applied, status)  # No mask applied if the region already has a mask in the area
+
+
+        # Apply the mask in the specified region (set to 1 in the specified area)
+        mask[0, top_pixel:bottom_pixel, left_pixel:right_pixel] = 1
+        print(status)
+
+        self.print_debug(f"mask.size()[{mask.size()}]")
+        print_debug_bar(self.is_debug)
+        
+        return (mask, is_applied, status)
+    
+    def skip(self, mask, reason: str):
+        print(reason)
+        return mask, False, reason
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+
+    def image_height(self, image_3d_4d):
+        return image_3d_4d.size()[1]
+
+    def image_width(self, image_3d_4d):
+        return image_3d_4d.size()[2]
+    
+    def is_mask_empty(self, mask):
+        if mask is None:
+            return True
+        elif not mask.any():
+            return True
+        return False
+
+
+
+##################################################################################################################
+# BK Create Mask For Image
+##################################################################################################################
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+class BKCreateMaskForImage:
+    def __init__(self):
+        self.minimum_image_size = 64
+        self.is_debug = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image":("IMAGE",),
+                "mask_type": (["Empty - Background Visible", "Opaque - Background Hidden"], {"default":"Empty - Background Visible"}),
+            },
+            "optional": {
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("MASK",)  # This specifies that the output will be text
+    RETURN_NAMES = ("mask",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Create Mask For Image"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, mask_type):
+        return float("nan")
+
+
+# NOTE: image tensor coordinates origin is at TOP-LEFT corner
+    def process(self, image, mask_type):
+
+        if image is None:
+            raise ValueError(f"Image is None. There is no image data to create a mask from.")
+
+        mask = None
+        if mask_type == "Empty - Background Visible":
+            mask = self.create_empty_opaque_3d_image(self.image_height(image), self.image_width(image))
+        else:
+            mask = self.create_full_transparent_3d_image(self.image_height(image), self.image_width(image))
+
+        return (mask,)
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print(string)
+
+    def create_empty_opaque_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.zeros(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+    
+    def create_full_transparent_3d_image(self, height, width):
+        # NOTE [Batch Size, Height, Width]
+        # use the reference image to get batch size and channels
+        #create a empty black / transparent image the size of the crop box
+        return torch.ones(( 1, 
+                            height, 
+                            width), 
+                            dtype=torch.float32)
+
+    def image_height(self, image_3d_4d):
+        return image_3d_4d.size()[1]
+
+    def image_width(self, image_3d_4d):
+        return image_3d_4d.size()[2]
 
 ##################################################################################################################
 # BK Load Image By Path
@@ -4663,178 +6505,396 @@ class BKLoadImage:
 
 #TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
 
-class BKLoRATestingNode:
+class BKLoRATest:
     def __init__(self):
+        self.is_debug = True
         self.selected_loras = SelectedLoras()
+        self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
+        self.output_dir = folder_paths.output_directory
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
+        return float("nan")
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
     
     @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
             "model": ("MODEL",),
             "clip": ("CLIP", ),
-            "name": ("STRING", {"multiline": False,"default": "Replace each number in the LoRA's name with '#'. The node will automatically pad the number and replace it in the name. Ex. my_lora_000000300 => my_lora_#########."}),
-            "start": ("INT", {"min":0, "max":999999999, "default": 100,"tooltip": "The starting number of the range of the LoRAs you want to cycle through."}),
-            "end": ("INT", {"min":0, "max":999999999 , "default": 3000,"tooltip": "The ending number of the range of the LoRAs you want to cycle through."}),
-            "step": ("INT", {"min":0, "max":999999999, "default": 100,"tooltip": "This is the steps between each lora's number in their name. Example: my_lora_0100, my_lora_0200, my_lora_0300 => step = 100"}),
-            "seed": ("INT", {"default": 0,"tooltip": "Used to determine which LoRA to use next. Set it to 'increment' to cycle through each LoRA. The node will automatically loop when the number is beyond the range of the LoRAs. No need to try to clamp this number."}),
+            "lora_folder": (lora_folder_paths,),
+            "prompts_tsv_filepath": ("STRING", {
+                "multiline": False,
+            }),
+            "test_results_folder": ("STRING",),
+            "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+              
+         },
+         "optional": {
+            "tag_to_replace": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "INT", "INT")
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "seed", "lora_num")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "positive", "negative", "prompt_name", "filename", "folder_path", "most_frequent_lora_tag")
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK LoRA Testing Node"  # Default label text
+    OUTPUT_NODE = True
 
-    def get_lora(self, model, clip, name, start, end, step, seed):
+    def set_base_of_relative_paths_to_output_folder(self, path):
+        if not os.path.isabs(path):
+            path = os.path.join(self.output_dir, path)
+        return path
+
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, test_results_folder, every_nth_lora, tag_to_replace = None):
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
 
-        # Find all groups of consecutive '#' characters
-        hash_groups = re.findall(r'#+', name)
+        # Fail early if any of the required inputs are empty
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
         
-        # Check if there is exactly one group of '#'
-        if len(hash_groups) != 1:
-            raise ValueError("The string must contain exactly one group of '#' characters.")
+        if not prompts_tsv_filepath:
+            raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
         
-        # Get the length of the group of '#'
-        hash_count = len(hash_groups[0])
+        if not test_results_folder:
+            raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
+
+        test_results_folder = self.set_base_of_relative_paths_to_output_folder(test_results_folder)
+
+        prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
+
+        found_loras = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+
+        if found_loras is None or len(found_loras) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        else:
+            for lora in found_loras:
+                self.print_debug(f"Found LoRA: [{lora}]")
+
+        prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
+
+        if prompts_df.empty:
+            raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
+
+        # Parse the TSV for any issues with the prompt names, i.e. duplicates, invalid characters, missing columns, etc.
+        # Send a warning to the console if any issues are found, but continue processing
+        valid_prompts = self.get_all_valid_prompts(prompts_df)
+
+        if not valid_prompts or len(valid_prompts) <= 0:
+            raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
+
+        positive = ""
+        negative = ""
+        prompt_name = ""
+        filename = ""
+        lora_name = ""
+        lora_path = ""
+        most_frequent_ss_tag = ""
+
+        # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
+        # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
+        for idx, lora in enumerate(found_loras):
+            if idx % every_nth_lora != 0:
+                continue
+            for prompt in valid_prompts:
+
+                lora_path = lora
+                lora_name = self.get_lora_name_wo_extension(lora)
+                positive, negative, prompt_name = prompt
+                filename = f"{prompt_name}_{lora_name}"
+                filepath = os.path.join(test_results_folder, filename + ".png")
+
+                self.print_debug(f"Checking if file exists [{filepath}]")
+
+                if self.is_image_not_generated(filepath):
+                    self.print_debug(f"[{filepath}] not found. Generating image...")
+                    # Load LoRA using path
+                    lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
+                    
+                    # Replace tag in prompt with most common lora tag found in metadata
+                    self.print_debug(f"Attempting to extract metadata from lora: [{lora_path}]")
+                    lora_full_path = folder_paths.get_full_path("loras", lora_path)
+                    self.print_debug(f"Full LoRA path: {lora_full_path}")
+
+                    # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
+                    # Wich should be its activation tag
+                    if self.is_user_want_to_replace_tag(tag_to_replace):
+                        freq_tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
+
+                                    # If everything suceeded, replace the tag in the positive prompt
+                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, freq_tag['tag'])
+
+                     # If the LoRA was loaded, apply the lora
+                    if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
+
+                    self.print_debug(f"Returning LoRA Testing Node with LoRA: {lora_name}, Prompt Name: {prompt_name}, Filename: {filename}, Test Results Folder: {test_results_folder}")
+                    self.print_debug(f"path: {test_results_folder}\\{filename}.png")
+       
+                    print_debug_bar(self.is_debug)
+                    return(result[0], result[1], lora_name, positive, negative, prompt_name, filename, test_results_folder, most_frequent_ss_tag)
+                self.print_debug(f" {filepath}.png ")
+        raise ValueError("All images already exist for the given LoRAs and prompts. No new images to generate.")
+
+    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+        max_tag = None
+        max_value = -1
+
+        for tag, tag_info in ss_tag_frequency_dict.items():
+            for inner_tag, value in tag_info.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
         
-        # Get LoRA number between start and end in increments of step (Rolls Over)
-        lora_number = get_inc_num_betwen(start, end, step, seed)
+        return max_tag
+    
+    def is_image_not_generated(self, filepath):
+        return not os.path.exists(f"{filepath}")
 
-        # Replace the '#' group with the specified 'number', padded to the length of the group
-        padded_number = str(lora_number).zfill(hash_count)
+    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
+        return prompt.replace(tag, lora_tag)
+    
+    def is_user_want_to_replace_tag(self, tag_to_replace):
+        return tag_to_replace is not None and tag_to_replace.strip() != ""
 
-        # Replace the first group of '#' with the padded number
-        lora_name = name.replace(hash_groups[0], padded_number, 1)
-
-        print(f"lora_name[{lora_name}]")
+    def extract_highest_tag_from_metadata(self, metadata):
+        ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
         
-        # Get list of all loras file paths
-        all_loras = folder_paths.get_filename_list("loras")
-
-        # Get all file paths that have the lora's name
-        matching_lora_paths = find_matching_files(all_loras, lora_name)
-
-        # Thow error if no LoRAs paths were found
-        if matching_lora_paths is None:
-            ValueError(f"No matching LoRA's found with name: [{lora_name}]")
+        if not ss_tag_frequency_str:
+            print("Error: No 'ss_tag_frequency' found in metadata.")
+            return None
         
-        if len(matching_lora_paths) <= 0:
-            ValueError(f"No matching LoRA's found with name: [{lora_name}]")
+        # Parse the JSON string from 'ss_tag_frequency'
+        try:
+            tag_frequency = json.loads(ss_tag_frequency_str)
+        except json.JSONDecodeError:
+            print("Error: Unable to decode JSON for 'ss_tag_frequency'.")
+            return None
+        
+        # Find the tag with the highest frequency
+        max_tag = None
+        max_value = -1
 
-        # Use first matching LoRA found 
-        lora_path = matching_lora_paths[0]
+        for outer_tag, inner_dict in tag_frequency.items():
+            for inner_tag, value in inner_dict.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+    
+    def is_end_of_metadata_found(self, buffer):
+        if not buffer:
+            return False
+        if len(buffer) < 2:
+            return False
+        is_first_brace_found = False
+        brace_count = 0
 
-        # Warn user if mulitple LoRAs found
-        if len(matching_lora_paths) > 1:
-            print(f"WARNING: Multiple LoRAs Found:")
-            for l in matching_lora_paths:
-                print(f"- {l}")
-            print(f"Using first LoRA found: [{lora_path}]")
-
-        # Load LoRA using path
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-        # If the LoRA was loaded, apply the lora
-        if len(lora_items) > 0:
-            for item in lora_items:
-                result = item.apply_lora(result[0], result[1])
+        for byte in buffer:
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
             
-        return(result[0], result[1], lora_name, lora_path, seed)    
+            if brace_count == 0 and is_first_brace_found:
+                return True
 
-def pad_num(number, pad):
-    return str(number).zfill(pad)
+        return False
+    
+    def parse_metadata_from_buffer_as_str(self, buffer):
+        if not buffer:
+            return None
+        if len(buffer) < 2:
+            return None
+        is_first_brace_found = False
+        brace_count = 0
 
-def get_inc_num_betwen(start, end, step, num):
-    # Calculate the increment
-    increment = num * step
-    
-    # Roll over if the increment exceeds the range
-    range_size = end - start
-    if increment >= range_size:
-        increment = increment % range_size  # This is the "rollover" effect
-    
-    # Add the increment to start and return the result
-    result = start + increment
-    return result
-
-def find_matching_files(file_paths, lora_name):
-    # List to hold the matching file paths
-    matching_files = []
-    
-    # Loop through the list of file paths
-    for file_path in file_paths:
-        # Extract the filename without the extension
-        file_name_without_extension = os.path.splitext(os.path.basename(file_path))[0]
-
-        # Compare the file name (without extension) with lora_name
-        if file_name_without_extension == lora_name:
-            matching_files.append(file_path)
-    
-    return matching_files
-    
-class SingleLoRATestNode:
-    def __init__(self):
-        self.selected_loras = SelectedLoras()
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "model": ("MODEL",),
-            "clip": ("CLIP", ),
-            "subfolder": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_prefix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_suffix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "extension": ("STRING", {
-                "multiline": False,
-                "default": ".safetensors"}),
+        for idx, byte in enumerate(buffer):
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
             
-            "idx": ("INT", {"default": 2,"tooltip": "Total number of loaders being used."}),
-            "max": ("INT", {"default": 3000,"tooltip": "The maxiumum number the loras go up to"}),
-            "min": ("INT", {"default": 2,"tooltip": "The minimum number the loras go down to."}),
-            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
-            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
-         }}
+            if brace_count == 0 and is_first_brace_found:
+                return buffer[:idx + 1].decode('utf-8')
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "INT",)
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "lora_path", "lora_number")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+        return None
+    
+    def add_outer_braces(self, metadata_str):
+        return f'{{{metadata_str.strip()}}}'
+    
+    def turnicate_buffer_to_start_of_metadata(self, buffer, metadata_start):
+        is_metadata_start_found = False
+        start_idx = buffer.find(metadata_start)
+        if start_idx != -1:
+           is_metadata_start_found = True
+           buffer = buffer[start_idx:]
+        return [buffer, is_metadata_start_found]
+    
+    def get_ss_tag_frequency_str_from_metadata(self, metadata_dict):
+        ss_tag_frequency_str = metadata_dict.get("ss_tag_frequency", None)
+        return ss_tag_frequency_str
 
-    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, idx, max, min, lora_step, zero_padding):
-        result = (model, clip,"","",0)
-        lora_number = get_nearest_step_value(min, max, lora_step, idx)
-        padded_integer_string = f"{lora_number:0{zero_padding}d}"
-        lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
-        lora_name = name_prefix + padded_integer_string + name_suffix
+    def get_safetensors_metadata_as_json(self, file_path):
+        with open(file_path, 'rb') as file:
+            # We're going to accumulate the bytes here
+            buffer = b''
+            metadata_start = b'"__metadata__":'
+            metadata_json_str = ""
+
+            while chunk := file.read(1024):  # Read in chunks
+                buffer += chunk
+
+                buffer, is_metadata_start_found = self.turnicate_buffer_to_start_of_metadata(buffer, metadata_start)
+                self.print_debug(f"Buffer: {buffer}")
+                self.print_debug(f"is_metadata_start_found: {is_metadata_start_found}")
+
+                if is_metadata_start_found:
+                    if parsed_metadata := self.parse_metadata_from_buffer_as_str(buffer):
+                        self.print_debug(f"parsed_metadata: {parsed_metadata}")
+                        metadata_json_str = parsed_metadata
+                        break
+
+            metadata_json_str = self.add_outer_braces(metadata_json_str)
+                
+            if metadata_json_str:
+                try:
+                    # Decode the JSON and return
+                    metadata_dict = json.loads(metadata_json_str)
+                    self.print_debug("Decoded metadata JSON (pretty printed):")
+                    self.print_debug(json.dumps(metadata_dict, indent=4))
+                    return metadata_dict["__metadata__"]
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    print(f"Error decoding JSON: {e}")
+                    return None
+
+            print("No __metadata__ section found.")
+            return None
+
+
+    def get_lora_name_wo_extension(self, lora_filepath):
+        return os.path.splitext(os.path.basename(lora_filepath))[0]
+    
+    def get_all_valid_prompts(self, prompts_df):
+        processed_data = []
+        processed_names = set()  # Local set to track names we've already seen
+
+        for index, row in prompts_df.iterrows():
+            name = row.get("name", "").strip()
+            self.print_debug(f"Processing row {index + 1}: name='{name}'")
+            positive = row.get("positive", "").strip()
+            self.print_debug(f"  positive='{positive}'")
+            # Handle 'negative' column, ensure it defaults to an empty string if missing or None
+            negative = row.get("negative", "") if "negative" in row else ""
+            self.print_debug(f"  negative='{negative}'")
+
+            # Step-by-step validation and processing
+            if self.is_valid_name(name, index):
+                if self.is_valid_filename(name, index):
+                    if not self.is_duplicate_name(name, processed_names, index):
+                        if self.is_valid_prompt(positive, index):
+                            processed_data.append(self.process_row( positive, negative, name))
         
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-        if len(lora_items) > 0:
-            for item in lora_items:
-                result = item.apply_lora(result[0], result[1])
-            
-        return(result[0],result[1],lora_name, lora_path, lora_number) 
+        return processed_data
     
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def is_valid_name(self, name, row_index):
+        if not name:
+            return False
+        return True
+
+    def is_valid_filename(self, name, row_index):
+        if re.search(self.invalid_filename_chars, name):
+            print(f"Warning: Invalid filename characters in 'name' '{name}' at row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def is_duplicate_name(self, name, processed_names, row_index):
+        if name in processed_names:
+            print(f"Warning: Duplicate 'name' found: '{name}' at row {row_index + 1}. Only the first occurrence will be used.")
+            return True  # Skip the duplicate
+        processed_names.add(name)  # Add the name to the processed set
+        return False
+
+    def is_valid_prompt(self, prompt, row_index):
+        if not prompt:
+            print(f"Warning: Empty 'positive' prompt in row {row_index + 1}. Skipping this row.")
+            return False
+        return True
+
+    def process_row(self, name, positive, negative):
+        return [name, positive, negative if negative is not None else ""]
+    
+
+    def read_file_to_dataframe(self, tsv_file_path):
+        # Read the file in binary mode and decode manually
+        try:
+            with open(tsv_file_path, 'rb') as file:
+                # Read the raw bytes
+                raw_data = file.read()
+
+                # Decode using utf-8 and ignore invalid characters
+                decoded_data = raw_data.decode('utf-8', errors='ignore')
+
+                # Use pandas to read the CSV from the decoded string
+                from io import StringIO
+                return pd.read_csv(StringIO(decoded_data), sep='\t')
+
+        except Exception as e:
+            raise Exception(f"Failed to read the TSV file. Reason: {e}")
+
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+
+
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+    
+    def filter_strings_by_prefix(self, string_list, prefix):
+        # Use list comprehension to filter strings that start with the given prefix
+        return [s for s in string_list if s.startswith(prefix)]
 
 def get_line_by_index(index: int, text: str) -> str:
-    """
-    Returns the line at the specified index from a multiline string.
-    
-    Args:
-        index (int): The zero-based index of the line to return.
-        text (str): The multiline string input.
-        
-    Returns:
-        str: The line at the given index, or an error message if the index is out of range.
-    """
     lines = text.splitlines()
     
     if 0 <= index < len(lines):
@@ -4843,126 +6903,20 @@ def get_line_by_index(index: int, text: str) -> str:
         return f"Index {index} out of range. Text has {len(lines)} lines."
     
 def count_lines(text: str) -> int:
-    """
-    Returns the number of lines in a multiline string.
-    
-    Args:
-        text (str): The multiline string input.
-        
-    Returns:
-        int: The total number of lines.
-    """
     return len(text.splitlines())
 
 def has_next_line(index: int, text: str) -> bool:
-    """
-    Checks if there is a next line after the given index in a multiline string.
-
-    Args:
-        index (int): The current line index (0-based).
-        text (str): The multiline string input.
-
-    Returns:
-        bool: True if there is a next line, False otherwise.
-    """
     lines = text.splitlines()
     return (index + 1) < len(lines)
 
 def parse_int(s: str) -> int:
-    """
-    Attempts to parse a string into an integer.
-
-    Args:
-        s (str): The input string.
-
-    Returns:
-        int: The parsed integer.
-
-    Raises:
-        ValueError: If the string cannot be converted to an integer.
-    """
-
     try:
         return int(s.strip())
     except (ValueError, TypeError):
         return -1
     
-class MultiLoRATestNode:
-    def __init__(self):
-        self.selected_loras = SelectedLoras()
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { 
-            "model": ("MODEL",),
-            "clip": ("CLIP", ),
-            "while_loop_idx": ("INT", {"default": 0,"tooltip": "Manually add a +1 to a value in the while loop and use that to increment this value."}),
-            "subfolder": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_prefix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "name_suffix": ("STRING", {
-                "multiline": False,
-                "default": ""}),
-            "extension": ("STRING", {
-                "multiline": False,
-                "default": ".safetensors"}),
-            "lora_list": ("STRING", {
-                "multiline": True,
-                "default": ""}),
-            
-            "lora_step": ("INT", {"default": 2,"tooltip": "This is the number the lora files increment by."}),
-            "zero_padding": ("INT", {"default": 9,"tooltip": "number of zeros to pad the number with."}),
-         }}
 
-    RETURN_TYPES = ("MODEL", "CLIP","BOOLEAN", "STRING", "STRING", "STRING", "INT", "INT",)
-    RETURN_NAMES = ("MODEL", "CLIP","has_next", "lora_name", "lora_prefix", "lora_path", "lora_number", "remaining")
-    FUNCTION = "get_lora"
-    CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
-
-    def get_lora(self, clip, model, subfolder, name_prefix, name_suffix, extension, lora_list, while_loop_idx, lora_step, zero_padding):
-        lora_result = (model, clip)
-        
-        total_count = count_lines(lora_list)
-        if total_count > 1:
-            has_next = has_next_line(while_loop_idx, lora_list)
-        else:
-            has_next = False
-        current_lora_string = get_line_by_index(while_loop_idx, lora_list)
-        idx = parse_int(current_lora_string)
-        if idx >= 0:
-            lora_number = get_nearest_step(lora_step, idx)
-            padded_integer_string = f"{lora_number:0{zero_padding}d}"
-            lora_path = subfolder + name_prefix + padded_integer_string + name_suffix + extension
-            lora_name = name_prefix + padded_integer_string + name_suffix
-        
-            lora_items = self.selected_loras.updated_lora_items_with_text(lora_path)
-
-            if len(lora_items) > 0:
-                for item in lora_items:
-                    lora_result = item.apply_lora(model, clip)
-        
-        else:
-            lora_name = f"No Lora"
-            lora_path = f"No Lora"
-            name_prefix = f"No Lora"
-            lora_number = -1
-            
-        return(lora_result[0], lora_result[1], has_next, lora_name, name_prefix, lora_path, lora_number, total_count) 
-    
 def to_utf8(input_string):
-    """
-    Converts a string to UTF-8 encoded bytes.
-    
-    Parameters:
-        input_string (str): The string to encode.
-    
-    Returns:
-        bytes: UTF-8 encoded version of the input string.
-    """
     utf8_bytes = input_string.encode('utf-8')
     return utf8_bytes.hex()
 
@@ -4991,7 +6945,7 @@ class ToUTF8:
         return(result) 
 
 
-class GetLargerValue:
+class BKGetLargerValue:
     def __init__(self):
         self.selected_loras = SelectedLoras()
     
@@ -5006,7 +6960,7 @@ class GetLargerValue:
     RETURN_NAMES = ("larger_value",)
     FUNCTION = "get_lora"
     CATEGORY = "BKNodes/LoRA Testing"  # A category for the node, adjust as needed
-    LABEL = "LoRA Testing Node"  # Default label text
+    LABEL = "BK Get Larger Value"  # Default label text
 
     def get_lora(self, a, b):
         result = None
@@ -5164,13 +7118,876 @@ class LoraItem:
         return self.strength_model == 0 and self.strength_clip == 0
 
 
+##################################################################################################################
+# BK Lora Switcher
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKLoraAutoSwitcher:
+    def __init__(self):
+        self.is_debug = False
+        self.selected_loras = SelectedLoras()
+        self.ignored_files = ["optimizer.pt"]
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder,  seed, every_nth_lora):
+        return float("nan")
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "lora_folder": (lora_folder_paths,),
+            "seed": ("INT", {"min" : 0} ),
+            "every_nth_lora": ("INT", {"default": 1, "min": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+              
+         },
+         "optional": {
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "INT", "STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_name", "idx","frequent_tag")
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK LoRA Auto Switcher"  # Default label text
+    OUTPUT_NODE = True
+
+    def remove_ignored_files(self, ignored_files: list, lora_paths: list):
+        return [path for path in lora_paths if os.path.basename(path) not in ignored_files]
+
+
+    def process(self, model, clip, lora_folder,  seed, every_nth_lora):
+        print_debug_header(self.is_debug, "BK LORA SWITCHER")
+        result = (model, clip,"","")
+        lora_name = ""
+
+        # Fail early if any of the required inputs are empty
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
+
+
+        lora_paths = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+
+        if lora_paths is None or len(lora_paths) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        
+        lora_paths = self.remove_ignored_files(self.ignored_files, lora_paths)
+
+        seed = seed + (every_nth_lora - 1)
+
+        idx = self.convert_seed_to_idx(len(lora_paths), seed)
+
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora_paths[idx])
+
+        if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
+
+        lora_name = self.get_lora_name_from_relative_path(lora_paths[idx])
+        lora_full_path = folder_paths.get_full_path("loras", lora_paths[idx])
+        tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()['tag']
+
+        print_debug_bar(self.is_debug)
+        return(result[0], result[1], lora_name, idx, tag)
+    
+    
+    
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+    
+    def get_lora_name_from_relative_path(self, lora_rel_path):
+        return os.path.splitext(os.path.basename(lora_rel_path))[0]
+    
+    def convert_seed_to_idx(self, length, seed):
+        # Use modulus to ensure the seed is within the bounds of the prompt_column length
+        if seed == 0:
+            return 0
+
+        return seed % length  # Adjust seed to be within valid range for the column
+
+##################################################################################################################
+# BK Adv LoRA Testing Node
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKLoRATestAdvanced:
+    def __init__(self):
+        self.is_debug = True
+        self.selected_loras = SelectedLoras()
+        self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
+        self.output_dir = folder_paths.output_directory
+        self.test_results_filename = "lora_test_results.ltr"
+        self.top_loras_filename = "top_loras.txt"
+
+    @classmethod
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, test_results_folder, every_nth_lora, tag_to_replace = None):
+        return float("nan")
+
+    @classmethod
+    def get_lora_folders(cls, file_paths):
+
+        folder_paths = []
+
+        # get the folder paths from the file paths and only add if not already in teh list
+        for file_path in file_paths:
+            folder_path = os.path.dirname(file_path)
+            if folder_path not in folder_paths:
+
+                folder_paths.append(folder_path)
+
+        # Convert the set to a sorted list and return it
+        return sorted(list(folder_paths))
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        lora_folder_paths = cls.get_lora_folders(folder_paths.get_filename_list("loras"))
+        return {"required": {
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "lora_folder": (lora_folder_paths,),
+            "prompts_tsv_filepath": ("STRING", {
+                "multiline": False,
+            }),
+            "results_folder": ("STRING",),
+            "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
+            "num_of_loras": ("INT", {"default" : 1, "min" : 1}),
+              
+         },
+         "optional": {
+            "tag_to_replace": ("STRING",),
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "INT")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path","prompt_name",  "positive", "negative",  "filename", "lora_name", "lora_trigger", "round")
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK LoRA Test (Advanced)"  # Default label text
+    OUTPUT_NODE = True
+
+    def set_base_of_relative_paths_to_output_folder(self, path):
+        if not os.path.isabs(path):
+            path = os.path.join(self.output_dir, path)
+        return path
+
+    def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, results_folder, every_nth_lora, tag_to_replace = None):
+        self.print_debug(f"\n\n\n\n")
+        
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+        result = (model, clip,"","")
+        positive = ""
+        negative = ""
+        prompt_name = ""
+        filename = ""
+        lora_path = ""
+        lora_name = ""
+        lora_trigger = ""
+
+        # Fail early if any of the required inputs are empty
+        if not lora_folder:
+            raise ValueError("LoRA folder path is empty. Please select a valid folder path.")
+        
+        if not prompts_tsv_filepath:
+            raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
+        
+        if not results_folder:
+            raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
+
+        results_folder = self.set_base_of_relative_paths_to_output_folder(results_folder)
+
+        prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
+
+        all_loras_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
+
+        if all_loras_in_folder is None or len(all_loras_in_folder) <= 0:
+            raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+
+        prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
+
+        
+        
+        all_prompts = prompt_parser.get_all_prompts_to_lower_name()
+
+
+        if not all_prompts or len(all_prompts) <= 0:
+            raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
+
+        test_results_file_path = self.get_test_results_filepath(results_folder)
+        self.print_debug(f"test_results_file_path[{test_results_file_path}]")
+
+        tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
+
+        first_round = 1
+        round_result = []
+
+        round = 1
+
+
+        has_lora_completed_round = self.has_lora_completed_round()
+
+        
+
+        """
+         
+        # if first round, create rating for all images, else, process the top loras
+        for round in range(1, len(all_prompts) + 1):
+            loras_to_process = []
+
+            if round == first_round:
+                self.print_debug(f"First Round.")
+                loras_to_process = all_loras_in_folder
+            
+            else:
+                self.print_debug(f"Round [{round}]")
+                loras_to_process = self.get_top_loras(tests_manager, num_of_loras)
+
+            self.print_debug(f"len(loras_to_process)[{len(loras_to_process)}]")
+
+            # If the results file failed to read, set it to all loras, (Probably first run)
+            if loras_to_process is None or len(loras_to_process) == 0:
+                loras_to_process = all_loras_in_folder
+    
+            round_result = self.do_round(all_prompts, tests_manager, loras_to_process, round)
+
+            self.print_debug(f"round_result[{round_result}]")
+
+            print(f"round_result [{round_result}]")
+            if round_result:
+                break
+
+
+        if not round_result:
+            top_results = tests_manager.get_top_results(num_of_loras)
+            if top_results is None:
+                print(f"Could not load TSV file to get top results. Is this the first run and no results generated yet?")
+            else:
+                self.save_and_print_list(top_results, )
+            raise ValueError(f"No more LoRAs left to process, all have been processed. Top LoRAs Saved in {self.top_loras_filename}.")
+            
+        lora_path, positive, negative, prompt_name = round_result
+        lora_name = self.get_lora_name_wo_extension(lora_path)
+        lora_full_path = folder_paths.get_full_path("loras", lora_path)
+
+
+        filename = self.get_image_filename(lora_name, prompt_name)
+
+        """
+        lora_trigger = LoRAMetadataParser(all_loras_in_folder[0], MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+
+        print_debug_bar(self.is_debug)
+        self.print_debug(f"\n\n\n\n")
+        return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, round)
+
+
+    def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
+        top_loras_to_process = []
+
+        # Printing the table header with proper alignment
+        print(f"{'Rank':<5}{'Lora Path':<30}{'Deviation':<15}{'Likeness':<10}{'Rating':<6}")
+        print("-" * 70)  # Just a separator for the table
+        
+        # Iterate over the top results and print each in a formatted row
+        top_results = tests_manager.get_top_results(num_of_loras)
+        
+        if top_results is None:
+            print(f"No top results generated yet. Returning all results to be tested.")
+            return None
+        
+        for rank, top_lora_test in enumerate(tests_manager.get_top_results(num_of_loras), start=1):
+            lora_path, sd, avg, rating = top_lora_test
+            print(f"{rank:<5}{lora_path:<30}{sd:<15}{avg:<10}{rating:<6}")
+            top_loras_to_process.append(lora_path)
+
+        return top_loras_to_process
+
+
+
+    def save_and_print_list(self, data, filename):
+        # Sort the data by the 'rating' value (index 3)
+        sorted_data = sorted(data, key=lambda x: x[3])
+        
+        # Print the table header
+        print(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}")
+        
+        # Iterate through the sorted data and print each row
+        for idx, item in enumerate(sorted_data, start=1):
+            name, sd, avg, rating = item
+            print(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}")
+        
+        # Save the data to a text file
+        with open(filename, "w") as file:
+            file.write(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}\n")
+            for idx, item in enumerate(sorted_data, start=1):
+                name, sd, avg, rating = item
+                file.write(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}\n")
+
+    def is_all_loras_have_start_rating(self, all_lora_rel_paths, test_results):
+        # Extract the lora names from the test results
+        lora_names_in_test_results = [result[0] for result in test_results]
+        
+        # Iterate through the list of all_lora_rel_paths and check if each filename (without extension)
+        # is present in the test_results' lora names
+        for lora_path in all_lora_rel_paths:
+            # Extract the filename without extension
+            lora_filename = os.path.splitext(os.path.basename(lora_path))[0]
+            
+            # Check if the lora_filename is in the lora_names_in_test_results
+            if lora_filename not in lora_names_in_test_results:
+                return False
+        
+        # If all lora files are found, return True
+        return True
+
+
+    def get_lora_name_from_relative_path(self, lora_rel_path):
+        return os.path.splitext(os.path.basename(lora_rel_path))[0]
+
+
+    def do_round(self, prompts, test_manager: TSVTestManager, lora_rel_paths, round):
+        for lora_rel_path in lora_rel_paths:
+            self.print_debug(f"lora_rel_path[{lora_rel_path}]")
+            self.print_debug(f"round[{round}]")
+            missing_test = self.get_next_missing_test(prompts, lora_rel_path, round, test_manager)
+            if missing_test:
+                return missing_test
+        
+        return None
+
+    def get_next_missing_test(self, prompts, lora_rel_path, current_round, test_manager: TSVTestManager):
+        for prev_round in range(1, current_round + 1):
+            self.print_debug(f"prev_round[{prev_round}]")
+
+            prev_test_prompt = self.get_prompt_for_round(prompts, prev_round)
+            self.print_debug(f"prev_test_prompt[{prev_test_prompt}]")
+
+            
+            if not prev_test_prompt:
+                raise ValueError(f"When generating images for lora [{lora_rel_path}], failed to find prompt for round [{current_round}].")
+
+            positive, negative, prompt_name, prompt_idx = prev_test_prompt
+            if not self.has_lora_completed_round(test_manager, lora_rel_path, prompt_name):
+                return (lora_rel_path, positive, negative, prompt_name)
+
+        return None
+
+
+    
+    def get_prompt_for_round(self, prompts, idx):
+        for prompt in prompts:
+            if prompt[3] == idx:  # check if idx matches round_idx
+                return prompt
+        return None  # return None if no match found
+        
+    def get_image_filename(self, prompt_name, lora_rel_path):
+        lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
+        return f"{prompt_name}_{lora_name}"
+    
+    def has_lora_completed_round(self, test_manager: TSVTestManager, lora, round_to_test):
+            
+            self.print_debug(f"lora_rel_path_search[{lora}]")
+            self.print_debug(f"round[{round}]")
+            self.print_debug(f"==============================TEST ROUNDS===============================")
+            for testround in test_manager.get_all_results():
+                self.print_debug(f"test_manager.get_all_results()[{testround}]")
+
+            has_completed_round = any(lora_path == lora and round == round_to_test for lora_path, prompt_name, round, value in test_manager.get_all_results())
+            
+            self.print_debug(f"has_completed_round[{has_completed_round}]")
+            return has_completed_round
+
+
+
+
+    def get_test_results_filepath(self, test_results_folder):
+        return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_results_filename}"
+
+    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
+        max_tag = None
+        max_value = -1
+
+        for tag, tag_info in ss_tag_frequency_dict.items():
+            for inner_tag, value in tag_info.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+    
+    def is_image_not_generated(self, filepath):
+        return not os.path.exists(f"{filepath}")
+
+    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
+        return prompt.replace(tag, lora_tag)
+    
+    def is_user_want_to_replace_tag(self, tag_to_replace):
+        return tag_to_replace is not None and tag_to_replace.strip() != ""
+
+    def extract_highest_tag_from_metadata(self, metadata):
+        """
+        Extracts the tag with the highest value from the 'ss_tag_frequency' inside the metadata.
+        
+        Args:
+            metadata (dict): The parsed metadata containing 'ss_tag_frequency'.
+        
+        Returns:
+            str: The tag with the highest frequency.
+        """
+        ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
+        
+        if not ss_tag_frequency_str:
+            print("Error: No 'ss_tag_frequency' found in metadata.")
+            return None
+        
+        # Parse the JSON string from 'ss_tag_frequency'
+        try:
+            tag_frequency = json.loads(ss_tag_frequency_str)
+        except json.JSONDecodeError:
+            print("Error: Unable to decode JSON for 'ss_tag_frequency'.")
+            return None
+        
+        # Find the tag with the highest frequency
+        max_tag = None
+        max_value = -1
+
+        for outer_tag, inner_dict in tag_frequency.items():
+            for inner_tag, value in inner_dict.items():
+                # Check if the value is higher than the current max_value
+                if value > max_value:
+                    max_value = value
+                    max_tag = inner_tag
+        
+        return max_tag
+    
+    def is_end_of_metadata_found(self, buffer):
+        if not buffer:
+            return False
+        if len(buffer) < 2:
+            return False
+        is_first_brace_found = False
+        brace_count = 0
+
+        for byte in buffer:
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return True
+
+        return False
+    
+    def parse_metadata_from_buffer_as_str(self, buffer):
+        if not buffer:
+            return None
+        if len(buffer) < 2:
+            return None
+        is_first_brace_found = False
+        brace_count = 0
+
+        for idx, byte in enumerate(buffer):
+            if byte == ord('{'):
+                brace_count += 1
+                is_first_brace_found = True
+            elif byte == ord('}') and is_first_brace_found:
+                brace_count -= 1
+            
+            if brace_count == 0 and is_first_brace_found:
+                return buffer[:idx + 1].decode('utf-8')
+
+        return None
+    
+    def add_outer_braces(self, metadata_str):
+        return f'{{{metadata_str.strip()}}}'
+    
+    def turnicate_buffer_to_start_of_metadata(self, buffer, metadata_start):
+        is_metadata_start_found = False
+        start_idx = buffer.find(metadata_start)
+        if start_idx != -1:
+           is_metadata_start_found = True
+           buffer = buffer[start_idx:]
+        return [buffer, is_metadata_start_found]
+
+    def get_lora_name_wo_extension(self, lora_filepath):
+        return os.path.splitext(os.path.basename(lora_filepath))[0]
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def get_all_lora_filepaths_in_folder(self, folder, file_paths):
+        # List to hold file paths that start with the given prefix
+        matching_paths = []
+        
+        # Loop through the list of file paths
+        for file_path in file_paths:
+            # Check if the file path starts with the provided prefix
+            if file_path.startswith(folder):
+                matching_paths.append(file_path)
+        
+        return matching_paths    
+
+
+    def get_abs_folder(self, path, root_folder):
+        if self.is_relative_path(path):
+            abs_folder = self.get_absolute_folder_path(root_folder, path)
+        else:
+            abs_folder = path
+
+        return abs_folder
+    
+    def filter_strings_by_prefix(self, string_list, prefix):
+        # Use list comprehension to filter strings that start with the given prefix
+        return [s for s in string_list if s.startswith(prefix)]
+
+
+class TSVWriter:
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        # Check if the file exists; if not, create it with headers
+        if not os.path.exists(filepath):
+            with open(filepath, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file, delimiter='\t')
+                writer.writerow(["lora_name", "prompt_name", "round", "value"])  # Write header
+
+    def append_to_tsv(self, lora_path: str, prompt_name: str, round: int, value: float):
+        """Append data to the TSV file."""
+        with open(self.filepath, mode='a', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file, delimiter='\t')
+            writer.writerow([lora_path, prompt_name, round, value])  # Write the row
+
+##################################################################################################################
+# BK Adv LoRA Results Node
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKLoraTestSaveAdvanced:
+    def __init__(self):
+        self.is_debug = False
+        self.results_log = "lora_test_results.ltr"
+
+
+    @classmethod
+    def IS_CHANGED(self, results_folder, lora_path, prompt_name, round, value):
+        return float("nan")
+
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "results_folder":("STRING",),
+            "lora_path":("STRING",),
+            "prompt_name":("STRING",),
+            "round":("INT",),
+            "value":("FLOAT",),
+
+         },
+         }
+
+    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("status",)
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK Lora Test Save (Advanced)"  # Default label text
+    OUTPUT_NODE = True
+
+    def get_log_path(self, folder, filename):
+        return folder.strip('\\').strip('/') + "\\" + filename
+
+    def process(self, results_folder, lora_path, prompt_name, round, value):
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+
+        value = self.convert_to_basic_float(value)
+
+        log_file_path = self.get_log_path(results_folder, self.results_log)
+
+
+        tsv_writer = TSVWriter(log_file_path)
+
+        tsv_writer.append_to_tsv(lora_path, prompt_name, round, value)
+
+        status = f"LORA[{lora_path}] - PROMPT[{prompt_name}] - ROUND[{round}] - VALUE[{value}]"
+        print(f"BKAdvLoRAResultsTSVWriter: {status}")
+        return(status,)
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+    def convert_to_basic_float(self, np_float):
+        # If np_float is a list, convert each element to a basic float
+        if isinstance(np_float, list):
+            return [float(item) if isinstance(item, np.float64) else float(item) for item in np_float][0]
+        
+        # If it's a single value, just convert it to a float
+        return float(np_float)
+
+
+
+
+class TSVPromptParser:
+    def __init__(self, tsv_reader: TSVReader):
+        self.dataframe = tsv_reader.to_dataframe()
+        self.headers = []
+
+    def _sanitize_name(self, name: str, row_idx: int) -> str:
+        """Sanitize the 'name' field by removing invalid filename characters."""
+        invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'  # Invalid characters for filenames
+        if re.search(invalid_chars, name):
+            sanitized_name = re.sub(invalid_chars, '_', name)
+            print(f"Row {row_idx}: Invalid characters in 'name'. Sanitized name: '{sanitized_name}'")
+            return sanitized_name
+        return name
+    
+    def get_all_prompts_to_lower_name(self):
+        """Returns a list of all prompts in the TSV in format [positive, negative, name, idx] where all names are set to lowercase. Returns None if the TSV failed to load."""
+        
+        sanatized_prompts = []
+        for prompt in self.get_all_prompts():
+            positive, negative, name, idx = prompt
+            if name:
+                name = name.lower()
+            sanatized_prompts.append((positive, negative, name, idx))
+
+        return sanatized_prompts
+    
+    
+    def get_all_tags(self):
+        """Returns a list of all Tags in the TSV in format [positive, negative, name, idx, tag_name]. Returns None if the TSV failed to load."""
+        # Initialize an empty list to hold the tags
+        tags_list = []
+
+        # Find all sets based on the column names
+        # A dictionary to map base name to its corresponding positive, negative, and name columns
+        set_columns = {}
+
+        if self.dataframe is None:
+            print(f"Failed to get tags. File failed to load.")
+
+
+        for header in self.dataframe.columns:
+            if header.endswith('_positive'):
+                base_name = header[:-9]  # Strip '_positive' to get the base name
+                if base_name not in set_columns:
+                    set_columns[base_name] = {'positive': None, 'negative': None, 'name': None}
+                set_columns[base_name]['positive'] = header
+            elif header.endswith('_negative'):
+                base_name = header[:-9]
+                if base_name not in set_columns:
+                    set_columns[base_name] = {'positive': None, 'negative': None, 'name': None}
+                set_columns[base_name]['negative'] = header
+            elif header.endswith('_name'):
+                base_name = header[:-5]
+                if base_name not in set_columns:
+                    set_columns[base_name] = {'positive': None, 'negative': None, 'name': None}
+                set_columns[base_name]['name'] = header
+
+        # Iterate through each row and collect the tags
+        for idx, row in self.dataframe.iterrows():
+            for tag_name, columns in set_columns.items():
+                # Use .get() to handle missing columns and place empty string if the column is missing
+                positive_value = row.get(columns['positive'], "") if columns['positive'] else ""
+                negative_value = row.get(columns['negative'], "") if columns['negative'] else ""
+                name_value = row.get(columns['name'], "") if columns['name'] else ""
+
+                # Add the tag to the list
+                tags_list.append([positive_value, negative_value, name_value, idx, tag_name])
+
+        return tags_list
+
+    def get_all_prompts(self):
+        """ Returns a list of all prompts in the TSV in format [positive, negative, name, idx]. Returns None if the TSV failed to load."""
+        if self.dataframe is None:
+            print(f"Failed to get all prompts. File failed to load.")
+            return None
+
+        if 'positive' not in self.dataframe.columns:
+            raise ValueError("Missing 'positive' column. 'positive' column is required.")
+        if 'name' not in self.dataframe.columns:
+            raise ValueError("Missing 'name' column. 'name' column is required.")
+
+        parsed_data = []
+
+        for idx, row in self.dataframe.iterrows():
+            # Check if the 'positive' and 'name' columns are strings
+            positive = row.get('positive', '')
+            name = row.get('name', '')
+            negative = row.get('negative', '')
+
+            # Ensure 'positive' is a string
+            if not isinstance(positive, str):
+                continue
+
+            # Ensure 'name' is a string and not None or empty
+            if not isinstance(name, str) or not name:
+                print(f"Row {idx}: 'name' column is invalid (None or empty string). This row will be ignored.")
+                continue
+
+            # Sanitize the 'name' to remove invalid filename characters
+            sanitized_name = self._sanitize_name(name, idx)
+
+            # Ensure 'negative' column is a string or empty string if invalid
+            if not isinstance(negative, str):
+                negative = ''
+
+            # Add the valid data to the list
+            parsed_data.append([positive, negative, sanitized_name, idx])
+
+        return parsed_data
+
+
+
+
+class STMetadataReader:
+    """Reads the metadata from a Safetensors file. Returns emtpy dict if no metadata found."""
+    def __init__(cls, safetensors_abs_path: str):
+        if not safetensors_abs_path.endswith('.safetensors'):
+            raise ValueError(f"Not a safetensors file: [{safetensors_abs_path}]")
+        cls.safetensors_path = safetensors_abs_path
+        cls.is_debug = False
+
+    def read_metadata_header(self):
+        """ Returns the metadata as a json file stored in the LoRA Safetensors Header"""
+
+        if self.safetensors_path.endswith('.safetensors'):
+            import json
+            import struct
+            try:
+                with open(self.safetensors_path, 'rb') as safetensors_file:
+                    # Read the first 8 bytes to get the header size
+                    header_size = struct.unpack('<Q', safetensors_file.read(8))[0]
+                    header_json = safetensors_file.read(header_size)
+                    header = json.loads(header_json)
+                    return header
+            except Exception as e:
+                self.print_debug(f"Error reading safetensors metadata: {e}")
+                return {}
+        
+        ValueError(f"Not a safetensors file: [{self.safetensors_path}]")
+
+    def print_debug(self, message):
+        if self.is_debug:
+            print(message)
+
+class STMetadataParser:
+    def __init__(self, safetensors_reader: STMetadataReader):
+        self.metadata = safetensors_reader.read_metadata_header()
+    
+    def get_most_frequent_tag(self) -> dict:
+        """ Returns the most frequent tag from the ss_tag_frequency metadata as a dictionary with 'tag' and 'count'."""
+        tag_sets = self.metadata.get('__metadata__', {}).get('ss_tag_frequency', {})
+        max_tag = ""
+        max_value = 0  # Using an integer for comparison, not a string
+
+        for tag_set, tags in json.loads(tag_sets).items():
+            for tag, frequency in tags.items():
+                if frequency >= max_value:
+                    max_value = frequency
+                    max_tag = tag
+
+        # Create a dictionary with both max tag and max value
+        result = {"tag": max_tag, "count": max_value}
+        return result
+
+    def print_debug(self, message):
+        if self.is_debug:
+            print(message)
+
+class TSVTagManager:
+    def __init__(self, prompt_parser: TSVPromptParser):
+        """
+        Initialize the TSVTagManager with a list of tags.
+        Each tag is in the format [positive, negative, name, idx, tag_name].
+        """
+        self.tags = prompt_parser.get_all_tags()
+        self.incremental_pos = 0  # Initialize the class counter
+        
+    def get_tags_by_name(self, tag_name):
+        """
+        Returns all items with the same tag_name.
+        """
+        return [tag for tag in self.tags if tag[4] == tag_name]
+    
+    def get_random_with_tag_name(self, tag_name):
+        """
+        Returns a random item with the specified tag_name.
+        """
+        tags_with_name = self.get_tags_by_name(tag_name)
+        if tags_with_name:
+            return random.choice(tags_with_name)
+        else:
+            return None
+    
+    def increment_counter(self):
+        """
+        Increments the incremental_pos counter.
+        """
+        self.incremental_pos += 1
+
+    def reset_increment_counter(self):
+        self.increment_counter = 0
+    
+    def get_incremental_tag(self, tag_name):
+        """
+        Returns an item based on the incremental_pos counter and modulus division
+        on the number of items with the specified tag_name.
+        """
+        tags_with_name = self.get_tags_by_name(tag_name)
+        if not tags_with_name:
+            return None
+        
+        item_count = len(tags_with_name)
+        idx_modulo = self.incremental_pos % item_count
+        return tags_with_name[idx_modulo]
+    
+    def get_all_tags(self):
+        # Get all tags using the existing get_all_tags method
+        tags = self.tags
+
+        # Extract the set_name (tag_name) from each tag and return a unique list of them
+        tag_names = {tag[4] for tag in tags}  # Set comprehension to ensure uniqueness
+        return list(tag_names)
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "Ollama Connectivity Data": JSONExtractor,
-    "Single LoRA Test Node": SingleLoRATestNode,
-    "Multi LoRA Test Node": MultiLoRATestNode,
-    "Get Larger Value": GetLargerValue,
+    # "Single LoRA Test Node": SingleLoRATestNode,
+    # "Multi LoRA Test Node": MultiLoRATestNode,
+    "Get Larger Value": BKGetLargerValue,
     "Convert To UTF8": ToUTF8,
     "BK Path Builder": BKPathBuilder,
     "BK Max Size": BKMaxSize,
@@ -5212,7 +8029,6 @@ NODE_CLASS_MAPPINGS = {
     "BK Remove Mask At Idx": BKRemoveMaskAtIdx,
     "BK Remove Mask At Idx SAM3": BKRemoveMaskAtIdxSAM3,
     "BK TSV Prompt Reader": BKTSVPromptReader,
-    "BK LoRA Testing Node": BKLoRATestingNode,
     "BK Get Next Missing Checkpoint": BKGetNextMissingCheckpoint,
     "BK Is Vertical Image": BKIsVerticalImage,
     "BK Is A Greater Than B INT": BKIsAGreaterThanBINT,
@@ -5220,7 +8036,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Is A Less Than B INT": BKIsALessThanBINT,
     "BK Is A Less Than Or Equal To B INT": BKIsALessThanOrEqualToBINT,
     "BK File Select Next Unprocessed": BKFileSelectNextUnprocessed,
-    "BK Move File": BKMoveFile,
+    "BK Move Or Copy File": BKMoveOrCopyFile,
     "BK Get Matching Mask": BKGetMatchingMask,
     "BK Get Last Folder Name": BKGetLastFolderName,
     "BK Next Unprocessed File In Folder": BKNextUnprocessedFileInFolder,
@@ -5229,7 +8045,79 @@ NODE_CLASS_MAPPINGS = {
     "BK TSV Random Prompt": BKTSVRandomPrompt,
     "BK Crop And Pad": BKCropAndPad,
     "BK Body Ratios": BKBodyRatios,
+    "BK Mask Square And Pad": BKMaskSquareAndPad,
+    "BK Mask Test": BKMaskTest,
+    "BK Bool Not": BKBoolNot,
+    "BK Add Mask Box": BKAddMaskBox,
+    "BK Create Mask For Image": BKCreateMaskForImage,
+    "BK Bool Operation": BKBoolOperation,
+    "BK Image Size Test": BKImageSizeTest,
+    "BK Get Next Caption File": BKGetNextCaptionFile,
+    "BK Image Sync": BKImageSync,
+    "BK LoRA Test": BKLoRATest,
+    "BK LoRA Test (Advanced)": BKLoRATestAdvanced,
+    "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
+    "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
+    "BK Save Caption Image": BKPathFormatter,
+    "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
+    "BK Path Formatter": BKPathFormatter,
+
 }
 
 # TODO: NODES: Create node that will save a json, with the hash of the model, the link to download it, and what resource it is from, then create a node that will use that information to download it? Or maybe instead of a json have it as readable text for anthony?
 # TODO: Update the "WORKFLOWS" section to allow for sorting, creating of folders, and moving of files
+# TODO: Create crop to mask node
+# TODO: Create Remove background based on mask node
+# TODO: Create node that will load vae and model and clip for wan and such that uses a config file?
+
+
+'''
+LORA TESTING NOTES
+- Should load loras by relative folder path
+- Should return name of LoRA so that an image can be saved with the LoRA name
+- A folder path should be specified, so it will check if the LoRA has already been tested
+- A file should be saved in the folder with the images that records which LoRAs have been tested already
+- Not only should the file save the name of the lora, but somehow ID the prompt and identify if the prompt has been used with the LoRA already
+-- Maybe hash the prompt text and save that alongside the LoRA name in the file
+- A count should be able to be set for how many images for the prompts should be generated
+- The node will only use a new prompt when it identifies that a prompt has been generated for all of the loras and for the qty as well
+- Need to be able to specify a tag for teh name replacement for the lora
+
+
+'''
+
+'''
+ADVANCED LORA TESTING NOTES - FACE ANALYSIS
+- Should have a strategic way of going through the prompts in the tsv i.e. in order, random, etc
+- Have a node that will take in the lora name and use that row to track the image's ratings
+- Should narrow down the loras using statistic percentiles i.e. top 10 percentile or something like this
+- Should have a threshold where once the loras are narrowed down to a select few, that it will go through and generate multiple images
+- Should have a form of detecting the deviation from each generation. So if as it narrows down the loras, it determines that one or more have a lot of fluctuation, it will broden its search again to include some of the other loras, and catch up by generating the images for those loras to catch up
+-- Basically if it detects a lot of variation in the results, it will start adding the next best loras back into the mix to see if they are more stable
+- Should be able to set a minimum number, so basically can set like narrow it down to 3 or something like that.
+- Going to need two nodes. The main node will look at the results of the face analysis numbers, the second will store the numbers after generation for the main node to analyze
+- Maybe break out the analysis parts of the process into a third node, and this third node can be plugged into the the node we already created?
+-- This doesn't make a whole lot of sense, because basically the analysis node would need to know a list of all lora's to analyze, which is basically 75% of what the main node does.
+- going to need to make maybe a seperate class for reading and writing to TSV files?
+- TSV files should not be saved as .txt but have an extension that is specific to the node, to prevent accidental mixup or deletion of the file.
+- The job of the main node is to basically go through and generate at least one of the prompts for all of the loras. Then use the results of that to start narrowing things down.
+- once they are narrowed down to a select few, then we should generate multiples of the same prompts so that we can compare for consistency
+-- maybe increase the generation count for each round? So for the first round it is just one image of the prompts, for the second round it is 2 of the same prompt thrid round...
+-- Maybe instead of doing the same prompt, we do different prompts, but similar for each lora?
+-- Maybe have a few different selectable nodes.
+--- Should make the processing method a pointer to a method, this way it can be swapped out easily
+--- Maybe should make different classes for analysis
+- prompts should be processed in order as they appear in the tsv file to make it simple
+- should have an input for the number of images generated initially that will somehow determine how many images are generated as the process goes along
+- should maybe have a different method for doing the first round to try to speed things up.
+-- Maybe the first round should be a close up on the face?
+-- Maybe have different images for comparison with different prompts? Like a image loader, that will select the different image based on the current prompt being generated for comparison?
+--- This might allow for more accurate results if the face is to the side? But I think this is making it too complicated.
+--- Could just run the same test with a different prompt dataset, but then you have two sets of results?
+- Have main node output status showing which lora's it is evaluating and their current rating with their current likeness value
+- It should do a first pass where it makes one image for every lora. This is usually a headshot.
+-- for every subsequent pass, if the avarage face analysis falls below the value of one of the first passes, then we go back and generate all the images up to this point for the one it fell below, and re-evaluate. we take the one that has the lowest score of the two. if that one falls below the avarage score of one of the original images, we then process that one and kick out the others in the final results
+---To do this we always include all all loras when taking the percentile of the set. And we always check if all images in our percentile set has all images. If not we generate them and catch them up. BUt we re-evaluate and do this until our percentiale set has all images and has the lowest avaragers of all loras.
+
+
+'''
