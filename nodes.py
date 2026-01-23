@@ -153,7 +153,7 @@ class TSVTestManager:
         # Handle None OR empty DataFrame
         if df is None or df.empty:
             return []
-
+        
         results = []
 
         # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
@@ -1664,7 +1664,7 @@ class BKTSVRandomPrompt:
         
         prompt_parser = TSVPromptParser(TSVReader(tsv_file_path))
         prompts = prompt_parser.get_all_prompts()
-        tag_manager = TSVTagManager(prompt_parser.get_all_tags())
+        tag_manager = TSVTagManager(prompt_parser)
 
         matching_prompts = []
         # If a name was provided get the prompt by name
@@ -7236,8 +7236,8 @@ class BKLoRATestAdvanced:
             "tag_to_replace": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path","prompt_name",  "positive", "negative",  "filename", "lora_name", "lora_trigger")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "INT")  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path","prompt_name",  "positive", "negative",  "filename", "lora_name", "lora_trigger", "round")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Test (Advanced)"  # Default label text
@@ -7249,6 +7249,8 @@ class BKLoRATestAdvanced:
         return path
 
     def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, results_folder, every_nth_lora, tag_to_replace = None):
+        self.print_debug(f"\n\n\n\n")
+        
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
         positive = ""
@@ -7279,18 +7281,31 @@ class BKLoRATestAdvanced:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
 
         prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
+
+        
         
         all_prompts = prompt_parser.get_all_prompts_to_lower_name()
+
 
         if not all_prompts or len(all_prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
         test_results_file_path = self.get_test_results_filepath(results_folder)
+        self.print_debug(f"test_results_file_path[{test_results_file_path}]")
 
         tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
 
         first_round = 1
         round_result = []
+
+        round = 1
+
+
+        has_lora_completed_round = self.has_lora_completed_round()
+
+        
+
+        """
          
         # if first round, create rating for all images, else, process the top loras
         for round in range(1, len(all_prompts) + 1):
@@ -7312,6 +7327,8 @@ class BKLoRATestAdvanced:
     
             round_result = self.do_round(all_prompts, tests_manager, loras_to_process, round)
 
+            self.print_debug(f"round_result[{round_result}]")
+
             print(f"round_result [{round_result}]")
             if round_result:
                 break
@@ -7332,11 +7349,12 @@ class BKLoRATestAdvanced:
 
         filename = self.get_image_filename(lora_name, prompt_name)
 
-        
-        lora_trigger = LoRAMetadataParser(lora_full_path, MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        """
+        lora_trigger = LoRAMetadataParser(all_loras_in_folder[0], MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         print_debug_bar(self.is_debug)
-        return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger)
+        self.print_debug(f"\n\n\n\n")
+        return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, round)
 
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
@@ -7405,6 +7423,8 @@ class BKLoRATestAdvanced:
 
     def do_round(self, prompts, test_manager: TSVTestManager, lora_rel_paths, round):
         for lora_rel_path in lora_rel_paths:
+            self.print_debug(f"lora_rel_path[{lora_rel_path}]")
+            self.print_debug(f"round[{round}]")
             missing_test = self.get_next_missing_test(prompts, lora_rel_path, round, test_manager)
             if missing_test:
                 return missing_test
@@ -7413,8 +7433,11 @@ class BKLoRATestAdvanced:
 
     def get_next_missing_test(self, prompts, lora_rel_path, current_round, test_manager: TSVTestManager):
         for prev_round in range(1, current_round + 1):
-            
+            self.print_debug(f"prev_round[{prev_round}]")
+
             prev_test_prompt = self.get_prompt_for_round(prompts, prev_round)
+            self.print_debug(f"prev_test_prompt[{prev_test_prompt}]")
+
             
             if not prev_test_prompt:
                 raise ValueError(f"When generating images for lora [{lora_rel_path}], failed to find prompt for round [{current_round}].")
@@ -7437,8 +7460,18 @@ class BKLoRATestAdvanced:
         lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
         return f"{prompt_name}_{lora_name}"
     
-    def has_lora_completed_round(self, test_manager: TSVTestManager, lora_rel_path_search, prompt_name_search):
-            return any(lora_name == lora_rel_path_search and prompt_name == prompt_name_search for lora_name, prompt_name, round, value in test_manager.get_all_results())
+    def has_lora_completed_round(self, test_manager: TSVTestManager, lora, round_to_test):
+            
+            self.print_debug(f"lora_rel_path_search[{lora}]")
+            self.print_debug(f"round[{round}]")
+            self.print_debug(f"==============================TEST ROUNDS===============================")
+            for testround in test_manager.get_all_results():
+                self.print_debug(f"test_manager.get_all_results()[{testround}]")
+
+            has_completed_round = any(lora_path == lora and round == round_to_test for lora_path, prompt_name, round, value in test_manager.get_all_results())
+            
+            self.print_debug(f"has_completed_round[{has_completed_round}]")
+            return has_completed_round
 
 
 
@@ -7595,13 +7628,13 @@ class TSVWriter:
         if not os.path.exists(filepath):
             with open(filepath, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file, delimiter='\t')
-                writer.writerow(["lora_name", "prompt_name", "value"])  # Write header
+                writer.writerow(["lora_name", "prompt_name", "round", "value"])  # Write header
 
-    def append_to_tsv(self, lora_path: str, prompt_name: str, value: float):
+    def append_to_tsv(self, lora_path: str, prompt_name: str, round: int, value: float):
         """Append data to the TSV file."""
         with open(self.filepath, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file, delimiter='\t')
-            writer.writerow([lora_path, prompt_name, value])  # Write the row
+            writer.writerow([lora_path, prompt_name, round, value])  # Write the row
 
 ##################################################################################################################
 # BK Adv LoRA Results Node
@@ -7612,11 +7645,11 @@ class TSVWriter:
 class BKLoraTestSaveAdvanced:
     def __init__(self):
         self.is_debug = False
-        self.filename = "lora_test_results.ltr"
+        self.results_log = "lora_test_results.ltr"
 
 
     @classmethod
-    def IS_CHANGED(self, results_folder, lora_path, prompt_name, value):
+    def IS_CHANGED(self, results_folder, lora_path, prompt_name, round, value):
         return float("nan")
 
     
@@ -7626,6 +7659,7 @@ class BKLoraTestSaveAdvanced:
             "results_folder":("STRING",),
             "lora_path":("STRING",),
             "prompt_name":("STRING",),
+            "round":("INT",),
             "value":("FLOAT",),
 
          },
@@ -7638,18 +7672,22 @@ class BKLoraTestSaveAdvanced:
     LABEL = "BK Lora Test Save (Advanced)"  # Default label text
     OUTPUT_NODE = True
 
-    def process(self, results_folder, lora_path, prompt_name, value):
+    def get_log_path(self, folder, filename):
+        return folder.strip('\\').strip('/') + "\\" + filename
+
+    def process(self, results_folder, lora_path, prompt_name, round, value):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
 
         value = self.convert_to_basic_float(value)
-        
-        results_filepath = results_folder.strip('\\').strip('/') + "\\" + self.filename
-        self.print_debug(f"results_filepath: [{results_filepath}]")
-        tsv_writer = TSVWriter(results_filepath)
 
-        tsv_writer.append_to_tsv(lora_path, prompt_name, value)
+        log_file_path = self.get_log_path(results_folder, self.results_log)
 
-        status = f"{lora_path} - {prompt_name} - {value}"
+
+        tsv_writer = TSVWriter(log_file_path)
+
+        tsv_writer.append_to_tsv(lora_path, prompt_name, round, value)
+
+        status = f"LORA[{lora_path}] - PROMPT[{prompt_name}] - ROUND[{round}] - VALUE[{value}]"
         print(f"BKAdvLoRAResultsTSVWriter: {status}")
         return(status,)
     
@@ -7660,7 +7698,7 @@ class BKLoraTestSaveAdvanced:
     def convert_to_basic_float(self, np_float):
         # If np_float is a list, convert each element to a basic float
         if isinstance(np_float, list):
-            return [float(item) if isinstance(item, np.float64) else float(item) for item in np_float]
+            return [float(item) if isinstance(item, np.float64) else float(item) for item in np_float][0]
         
         # If it's a single value, just convert it to a float
         return float(np_float)
