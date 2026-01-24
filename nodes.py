@@ -1649,6 +1649,7 @@ class BKTSVRandomPrompt:
     LABEL = "BK TSV Random Prompt"  # Default label text
     OUTPUT_NODE = True
 
+    # Add a search mode, so allow selection of search names, prompts, negatives, and different modes, i.e. names and positive, names and negative, negative, postive, names, all different modes.
 
     def process(self, tsv_file_path, seed, name_tag, subject_name, prompt_name_search = None):
         self.name = ""
@@ -1685,7 +1686,7 @@ class BKTSVRandomPrompt:
         self.print_debug(f"len(matching_prompts)[{len(matching_prompts)}]")
 
         idx = self.convert_seed_to_idx(len(matching_prompts), seed)
-        pos_prompt, neg_prompt, prompt_name, prompt_idx = matching_prompts[idx]
+        selected_prompt = matching_prompts[idx]
 
         
         
@@ -1697,13 +1698,13 @@ class BKTSVRandomPrompt:
                 self.print_debug(f"positive[{rand_tag['positive']}] negative[{rand_tag['negative']}] name[{rand_tag['name']}] idx[{rand_tag['idx']}] tag_name[{rand_tag['tag_name']}]")
 
 
-                pos_prompt = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['positive'], pos_prompt)
-                neg_prompt = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['negative'], neg_prompt)
+                selected_prompt['positive'] = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['positive'], selected_prompt['positive'])
+                selected_prompt['negative'] = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['negative'], selected_prompt['negative'])
         
         # Replace name tag in prompt if user has specified one
         if name_tag:        
-            pos_prompt = self.replace_tag_in_prompt(name_tag, subject_name, pos_prompt)
-            neg_prompt = self.replace_tag_in_prompt(name_tag, subject_name, neg_prompt)
+            selected_prompt['positive'] = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt['positive'])
+            selected_prompt['negative'] = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt['negative'])
         
         
         # TODO: Make a toggleable option to select if the name of the tags should be output in the name as well or not
@@ -1718,7 +1719,7 @@ class BKTSVRandomPrompt:
         # TODO: Filter by keywords, allow for searching of keywords in the prompt such as "pink" or "standing"
 
 
-        return pos_prompt, neg_prompt, prompt_name, prompt_idx, seed
+        return selected_prompt['positive'], selected_prompt['negative'], selected_prompt['name'], idx, seed
     
     def replace_tag_in_prompt(self, tag_name, value, prompt,):
         return prompt.replace(tag_name, value)
@@ -1783,11 +1784,11 @@ class BKTSVRandomPrompt:
 
         for prompt in prompts:
             positive, negative, name, idx = prompt
-            self.print_debug(f"name[{name}]")
-            if name:
-                self.print_debug(f"name[{name}] is true")
-                if name.startswith(str(start_with_name)):
-                    self.print_debug(f"name[{name}] starts with [{start_with_name}]")
+            self.print_debug(f"prompt['name'][{prompt['name']}]")
+            if prompt['name']:
+                self.print_debug(f"prompt['name'][{prompt['name']}] is true")
+                if name.startswith(str(prompt['name'])):
+                    self.print_debug(f"prompt['name'][{prompt['name']}] starts with [{start_with_name}]")
                     all_matching_prompts.append(prompt)
 
         return all_matching_prompts
@@ -7187,8 +7188,8 @@ class LoraItemsParser:
         self.loras_by_short_names = loras_by_short_names
         self.default_weight = default_weight
         self.weight_separator = weight_separator
-        self.prefix_trim_re = re.compile("\A<(lora|lyco):")
-        self.comment_trim_re = re.compile("\s*#.*\Z")
+        self.prefix_trim_re = re.compile(r"\A<(lora|lyco):")
+        self.comment_trim_re = re.compile(r"\s*#.*\Z")
     
     def execute(self):
         return [LoraItem(elements[0], elements[1], elements[2])
@@ -7385,6 +7386,72 @@ class BKLoraAutoSwitcher:
 
         return seed % length  # Adjust seed to be within valid range for the column
 
+
+    
+##################################################################################################################
+# BK Simple Lora Loader
+##################################################################################################################
+
+#TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
+
+class BKSimpleLoraLoader:
+    def __init__(self):
+        self.is_debug = False
+        self.selected_loras = SelectedLoras()
+        self.output_dir = folder_paths.output_directory
+
+
+    @classmethod
+    def IS_CHANGED(self, clip, model, lora):
+        return float("nan")
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        lora_paths = folder_paths.get_filename_list("loras")
+        return {"required": {
+            "model": ("MODEL",),
+            "clip": ("CLIP", ),
+            "lora": (lora_paths,),
+         },
+         "optional": {
+         }}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "lora_path","lora_name", "lora_trigger",)
+    FUNCTION = "process"
+    CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
+    LABEL = "BK LoRA Test (Advanced)"  # Default label text
+    OUTPUT_NODE = True
+
+    def set_base_of_relative_paths_to_output_folder(self, path):
+        if not os.path.isabs(path):
+            path = os.path.join(self.output_dir, path)
+        return path
+
+    def process(self, clip, model, lora):
+        self.print_debug(f"\n\n\n\n")
+        
+        print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+        result = (model, clip,"","")
+
+        lora_full_path = folder_paths.get_full_path("loras", lora)
+        lora_name = os.path.split(os.path.basename(lora_full_path))
+        lora_trigger = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora)
+
+        if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
+
+        print_debug_bar(self.is_debug)
+        self.print_debug(f"\n\n\n\n")
+        return(result[0], result[1], lora_full_path , lora_name, lora_trigger['tag'],)
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
+
+
 ##################################################################################################################
 # BK Adv LoRA Testing Node
 ##################################################################################################################
@@ -7397,11 +7464,13 @@ class BKLoRATestAdvanced:
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
-        self.test_results_filename = "lora_test_results.ltr"
+        self.test_log_filename = "lora_test_results.ltr"
         self.top_loras_filename = "top_loras.txt"
+        self.aitk_log_name = "log.txt"
+        self.result_log_name = "results.trlog"
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, test_results_folder, every_nth_lora, tag_to_replace = None):
+    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras,aitk_log, tag_to_replace = None):
         return float("nan")
 
     @classmethod
@@ -7430,17 +7499,17 @@ class BKLoRATestAdvanced:
             "prompts_tsv_filepath": ("STRING", {
                 "multiline": False,
             }),
-            "results_folder": ("STRING",),
-            "every_nth_lora": ("INT", {"default": 1, "tooltip": "Every N LoRA files to test. Set to 1 to test all LoRAs."}),
             "num_of_loras": ("INT", {"default" : 1, "min" : 1}),
+            
               
          },
          "optional": {
             "tag_to_replace": ("STRING",),
+            "aitk_log": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "INT")  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "results_folder", "lora_path","prompt_name",  "positive", "negative",  "filename", "lora_name", "lora_trigger", "round")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "LORA_TEST_INFO", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Test (Advanced)"  # Default label text
@@ -7450,11 +7519,17 @@ class BKLoRATestAdvanced:
         if not os.path.isabs(path):
             path = os.path.join(self.output_dir, path)
         return path
+    
+    def get_name_wo_ext(self, filepath):
+        return os.path.splitext(os.path.basename(filepath))[0]
 
-    def process(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras, results_folder, every_nth_lora, tag_to_replace = None):
+    def process(self, model, clip, lora_folder, aitk_log, prompts_tsv_filepath, num_of_loras, tag_to_replace = None):
         self.print_debug(f"\n\n\n\n")
         
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+
+        aitk_log = aitk_log.strip("\"").strip()
+        prompts_tsv_filepath = prompts_tsv_filepath.strip("\"").strip()
         result = (model, clip,"","")
         positive = ""
         negative = ""
@@ -7471,22 +7546,48 @@ class BKLoRATestAdvanced:
         if not prompts_tsv_filepath:
             raise ValueError("Prompts TSV file path is empty. Please provide a valid file path.")
         
-        if not results_folder:
-            raise ValueError("Test results folder path is empty. Please provide a valid folder path.")
-
-        results_folder = self.set_base_of_relative_paths_to_output_folder(results_folder)
-
         prompts_tsv_filepath = prompts_tsv_filepath.strip('"').strip("'").strip()
 
         all_loras_in_folder = self.get_all_lora_filepaths_in_folder(lora_folder, folder_paths.get_filename_list("loras"))
 
         if all_loras_in_folder is None or len(all_loras_in_folder) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
+        
+        temp_lora = all_loras_in_folder[0]
 
         prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
+        lora_full_path = folder_paths.get_full_path("loras", temp_lora)
+        abs_lora_folder_path = os.path.dirname(lora_full_path)
+        log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
+        
+        # If the user's provided log exists, use that instead, else use default log location in folder
+        if aitk_log:
+            if os.path.exists(aitk_log):
+                log_loc = aitk_log
+            else:
+                print(f"User provided log not found, using default log location in folder.")
+
+        self.print_debug(f"log_loc[{log_loc}]")
+        if not os.path.exists(log_loc):
+            raise FileNotFoundError(f"Could not find AI-Toolkit [{self.aitk_log_name}] file in the folder and/or user provided path. Can not continue.")
+
+        aitk_log_parser = AITKLogParser(log_loc)
+
+        lowest_loss_loras = aitk_log_parser.filter_and_sort(num_of_loras)
+
+        for lowest_lora in lowest_loss_loras:
+            print(f"lowest_lora[{lowest_lora}]")
+
+
 
         
+
+
+        lora_name = self.get_name_wo_ext(temp_lora)
+
+        test_info = json.dumps({"result_log" : log_loc, "lora_name": lora_name, "prompt_name" : "PLACE_HOLDER", "round" : -1})
         
+        """
         all_prompts = prompt_parser.get_all_prompts_to_lower_name()
 
 
@@ -7505,7 +7606,7 @@ class BKLoRATestAdvanced:
 
 
         has_lora_completed_round = self.has_lora_completed_round()
-
+        """
         
 
         """
@@ -7553,11 +7654,20 @@ class BKLoRATestAdvanced:
         filename = self.get_image_filename(lora_name, prompt_name)
 
         """
-        lora_trigger = STMetadataParser(all_loras_in_folder[0], MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        
+        lora_trigger = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
+        
+        status = f"{test_info}"
 
+        positive = "PLACEHOLDER"
+        negative = "PLACEHOLDER"
+        lora_name = "PLACEHOLDER"
+        lora_trigger = "PLACEHOLDER"
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
-        return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, round)
+        "MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status"
+        return(model, clip, positive, negative, lora_name,  lora_trigger, test_info, status)
+        #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
@@ -7680,7 +7790,7 @@ class BKLoRATestAdvanced:
 
 
     def get_test_results_filepath(self, test_results_folder):
-        return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_results_filename}"
+        return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_log_filename}"
 
     def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
         max_tag = None
@@ -7823,7 +7933,80 @@ class BKLoRATestAdvanced:
         # Use list comprehension to filter strings that start with the given prefix
         return [s for s in string_list if s.startswith(prefix)]
 
+###############################################################################################################
+# LOG PARSER
+###############################################################################################################
+class AITKLogParser:
+    """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.data = []
 
+    def parse(self):
+        # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
+        with open(self.filepath, 'rb') as file:
+            log_data = file.read().decode('utf-8', errors='ignore')
+
+        # Define regex patterns to extract loss values, step numbers, and safetensor names
+        loss_pattern = r'loss: ([\d\.e\-\+]+)'  # e.g., loss: 9.734e-02
+        step_pattern = r'Saving at step (\d+)'  # e.g., Saving at step 3150
+        tensor_name_pattern = r'Saved checkpoint to [\\|/].+?([A-Za-z0-9_\-]+\.safetensors)'  # e.g., 4ur0r4_WAN2_1_512_V1_000003150.safetensors
+
+        # Iterate over each line of the log data
+        lines = log_data.splitlines()
+        loss_value = None
+        for line in lines:
+            # Look for lines that contain the loss value and step number
+            loss_match = re.search(loss_pattern, line)
+            step_match = re.search(step_pattern, line)
+            tensor_name_match = re.search(tensor_name_pattern, line)
+
+            if loss_match:
+                loss_value = float(loss_match.group(1))  # Store the loss value
+
+            if step_match and loss_value is not None:
+                # When a checkpoint step is found, also grab the safetensor's name
+                step = int(step_match.group(1))  # Extract the step number
+
+                if tensor_name_match:
+                    # Extract the safetensor name (no path, just the filename)
+                    tensor_name = tensor_name_match.group(1)
+
+                    # Append the extracted data as a dictionary
+                    self.data.append({
+                        "name": tensor_name,
+                        "loss": loss_value,
+                        "step": step
+                    })
+
+                loss_value = None  # Reset the loss value after saving checkpoint info
+
+        # Sort the data by loss value in ascending order
+        self.data.sort(key=lambda x: x["loss"])
+
+        return json.dumps(self.data, indent=4)
+
+    def filter_and_sort(self, num_results, ignore_list=[]):
+        """
+        Filters the data by loss value and excludes items in the ignore list.
+        
+        :param num_results: Number of safetensors to return, sorted by loss value.
+        :param ignore_list: List of safetensor names to exclude from the results.
+        :return: A sorted list of dictionaries with the smallest loss values, excluding ignored items.
+        """
+        # Filter out the items in the ignore list
+        filtered_data = [item for item in self.data if item['name'] not in [ignore['name'] for ignore in ignore_list]]
+
+        # Sort the filtered data by loss value (ascending order)
+        filtered_data.sort(key=lambda x: x["loss"])
+
+        # Return the top 'num_results' safetensors from the sorted filtered data
+        return filtered_data[:num_results]
+
+
+###############################################################################################################
+# TSVWriter
+###############################################################################################################
 class TSVWriter:
     def __init__(self, filepath: str):
         self.filepath = filepath
@@ -7852,19 +8035,15 @@ class BKLoraTestSaveAdvanced:
 
 
     @classmethod
-    def IS_CHANGED(self, results_folder, lora_path, prompt_name, round, value):
+    def IS_CHANGED(self, test_info, value):
         return float("nan")
 
     
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "results_folder":("STRING",),
-            "lora_path":("STRING",),
-            "prompt_name":("STRING",),
-            "round":("INT",),
+            "test_info":("LORA_TEST_INFO",),
             "value":("FLOAT",),
-
          },
          }
 
@@ -7878,19 +8057,19 @@ class BKLoraTestSaveAdvanced:
     def get_log_path(self, folder, filename):
         return folder.strip('\\').strip('/') + "\\" + filename
 
-    def process(self, results_folder, lora_path, prompt_name, round, value):
+    def process(self, test_info, value):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
+
+        test_info = json.loads(test_info)
 
         value = self.convert_to_basic_float(value)
 
-        log_file_path = self.get_log_path(results_folder, self.results_log)
-
-
+        log_file_path = test_info['results_log']
         tsv_writer = TSVWriter(log_file_path)
 
-        tsv_writer.append_to_tsv(lora_path, prompt_name, round, value)
+        tsv_writer.append_to_tsv(test_info['lora_name'], test_info['prompt_name'], test_info['round'], value)
 
-        status = f"LORA[{lora_path}] - PROMPT[{prompt_name}] - ROUND[{round}] - VALUE[{value}]"
+        status = f"LORA[{test_info['lora_name']}] - PROMPT[{test_info['prompt_name']}] - ROUND[{test_info['round']}] - VALUE[{value}]"
         print(f"BKAdvLoRAResultsTSVWriter: {status}")
         return(status,)
     
@@ -7931,14 +8110,13 @@ class TSVPromptParser:
     def get_all_prompts_to_lower_name(self):
         """Returns a list of all prompts in the TSV in format [positive, negative, name, idx] where all names are set to lowercase. Returns None if the TSV failed to load."""
         
-        sanatized_prompts = []
+        sanitized_prompts = []  # Fixed the typo here
         for prompt in self.get_all_prompts():
-            positive, negative, name, idx = prompt
-            if name:
-                name = name.lower()
-            sanatized_prompts.append((positive, negative, name, idx))
+            if prompt['name']:
+                prompt['name'] = prompt['name'].lower()
+            sanitized_prompts.append(prompt)
 
-        return sanatized_prompts
+        return sanitized_prompts
     
     
     def get_all_tags(self):
@@ -8055,7 +8233,7 @@ class TSVPromptParser:
                 negative = ''
 
             # Add the valid data to the list
-            parsed_data.append([positive, negative, sanitized_name, idx])
+            parsed_data.append({'postive': positive, 'negative' : negative, 'name': sanitized_name, 'idx': idx})
 
         return parsed_data
 
@@ -8252,6 +8430,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
     "BK Path Formatter": BKPathFormatter,
     "BK Save As Icon": BKSaveAsIcon,
+    "BK Simple Lora Loader": BKSimpleLoraLoader,
 
 }
 
