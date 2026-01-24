@@ -1,7 +1,8 @@
 ﻿<Window x:Class="AI_Toolkit_log_parser.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Safetensor Log Parser" Height="500" Width="800" AllowDrop="True">
+        Title="Safetensor Log Parser" Height="500" Width="800" AllowDrop="True"
+        >
     <Grid>
         <!-- Button to Load Log File -->
         <Button Name="LoadButton" Content="Load Log" HorizontalAlignment="Left" VerticalAlignment="Top" Width="100" Height="30" Margin="10,10,0,0" Click="LoadButton_Click"/>

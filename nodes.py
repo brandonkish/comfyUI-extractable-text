@@ -1675,7 +1675,7 @@ class BKTSVRandomPrompt:
                 self.print_debug(f"matching prompt[{prompt}]")
 
             if not matching_prompts:
-                raise ValueError(f"matching prompts returned None for [{prompt_name_search}] in the TSV.")
+                raise ValueError(f"No prompts have a name that starts with [{prompt_name_search}] in the TSV.")
             
             if len(matching_prompts) == 0:
                 raise ValueError(f"No prompts found where the name starts with [{prompt_name_search}] in the TSV.")
@@ -1690,10 +1690,15 @@ class BKTSVRandomPrompt:
         
         
         # Replace all tags in the prompt
-        for tag in tag_manager.get_all_tags():
-                tag_positive, tag_negative, tag_name, tag_idx, tag =  tag_manager.get_random_with_tag_name(tag_name)
-                pos_prompt = self.replace_tag_in_prompt(tag, tag_positive, pos_prompt)
-                neg_prompt = self.replace_tag_in_prompt(tag, tag_negative, neg_prompt)
+        for next_tag in tag_manager.get_all_tags():
+                rand_tag =  tag_manager.get_random_with_tag_name(next_tag)
+                
+
+                self.print_debug(f"positive[{rand_tag['positive']}] negative[{rand_tag['negative']}] name[{rand_tag['name']}] idx[{rand_tag['idx']}] tag_name[{rand_tag['tag_name']}]")
+
+
+                pos_prompt = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['positive'], pos_prompt)
+                neg_prompt = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['negative'], neg_prompt)
         
         # Replace name tag in prompt if user has specified one
         if name_tag:        
@@ -1715,8 +1720,8 @@ class BKTSVRandomPrompt:
 
         return pos_prompt, neg_prompt, prompt_name, prompt_idx, seed
     
-    def replace_tag_in_prompt(self, tag, tag_value, prompt):
-        return prompt.replace(tag, tag_value)
+    def replace_tag_in_prompt(self, tag_name, value, prompt,):
+        return prompt.replace(tag_name, value)
     
     def is_any_prompts_in_list(self, prompts):
         return len(prompts) == 0
@@ -4772,15 +4777,20 @@ class BKSaveAsIcon:
         # Convert each image in the batch to PIL Image and resize it
         images = []
         for i in range(batch_size):
-            # Ensure the image is in uint8 format (0-255 range)
             img_array = image[i]
             
-            # If the image is float32, scale it to the 0-255 range
+            # If the image is in float32, scale it to uint8 (0-255)
             if img_array.dtype == np.float32:
                 img_array = np.clip(img_array * 255, 0, 255).astype(np.uint8)
-
-            # Convert the image to a PIL Image object
-            img = Image.fromarray(img_array)
+            
+            # Ensure the image is in the correct shape for PIL (height, width, channels)
+            if img_array.shape[-1] == 1:  # Grayscale image
+                img_array = np.squeeze(img_array, axis=-1)  # Remove single channel
+                img = Image.fromarray(img_array, mode='L')
+            elif img_array.shape[-1] == 3:  # RGB image
+                img = Image.fromarray(img_array, mode='RGB')
+            elif img_array.shape[-1] == 4:  # RGBA image
+                img = Image.fromarray(img_array, mode='RGBA')
 
             # Resize the image to the specified size (use LANCZOS for high-quality resizing)
             img_resized = img.resize((size, size), Image.Resampling.LANCZOS)
@@ -4788,8 +4798,8 @@ class BKSaveAsIcon:
             # Append the resized image to the list
             images.append(img_resized)
 
-        # Save the images as an ICO file
-        images[0].save(f"{unique_path_wo_ext}.ico", format="ICO", sizes=[(size,size)])
+        # Save the images as an ICO file (check the format)
+        images[0].save(f"{unique_path_wo_ext}.ico", format="ICO", sizes=[(size, size)])
 
         return (f"{unique_path_wo_ext}.ico",)
 
@@ -7543,7 +7553,7 @@ class BKLoRATestAdvanced:
         filename = self.get_image_filename(lora_name, prompt_name)
 
         """
-        lora_trigger = LoRAMetadataParser(all_loras_in_folder[0], MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
+        lora_trigger = STMetadataParser(all_loras_in_folder[0], MAX_SAFETENSOR_CHUNKS_TO_READ).get_most_frequent_ss_tag()
 
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
@@ -7903,6 +7913,11 @@ class TSVPromptParser:
     def __init__(self, tsv_reader: TSVReader):
         self.dataframe = tsv_reader.to_dataframe()
         self.headers = []
+        self.is_debug = True
+
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
 
     def _sanitize_name(self, name: str, row_idx: int) -> str:
         """Sanitize the 'name' field by removing invalid filename characters."""
@@ -7927,7 +7942,7 @@ class TSVPromptParser:
     
     
     def get_all_tags(self):
-        """Returns a list of all Tags in the TSV in format [positive, negative, name, idx, tag_name]. Returns None if the TSV failed to load."""
+        """Returns a list of all Tags in the TSV in the format of JSON objects [positive, negative, name, idx, tag_name]. Returns an empty list if the TSV failed to load."""
         # Initialize an empty list to hold the tags
         tags_list = []
 
@@ -7937,7 +7952,7 @@ class TSVPromptParser:
 
         if self.dataframe is None:
             print(f"Failed to get tags. File failed to load.")
-
+            return []  # Return an empty list instead of None if file fails to load
 
         for header in self.dataframe.columns:
             if header.endswith('_positive'):
@@ -7964,10 +7979,45 @@ class TSVPromptParser:
                 negative_value = row.get(columns['negative'], "") if columns['negative'] else ""
                 name_value = row.get(columns['name'], "") if columns['name'] else ""
 
-                # Add the tag to the list
-                tags_list.append([positive_value, negative_value, name_value, idx, tag_name])
+                # Add the tag as a dictionary (JSON object) to the list
+                tags_list.append({
+                    "positive": positive_value,
+                    "negative": negative_value,
+                    "name": name_value,
+                    "idx": idx,
+                    "tag_name": tag_name
+                })
 
+        self.print_debug(f"===========================TAG LIST===========================")
+        for tag in tags_list:
+            self.print_debug(f"positive[{tag['positive']}] negative[{tag['negative']}] name[{tag['name']}] idx[{tag['idx']}] tag_name[{tag['tag_name']}]")
+        self.print_debug(f"===========================END TAG LIST=======================")
+
+        tags_list = self.remove_invalid_positive_tags(tags_list)
+        
         return tags_list
+    
+    
+    def remove_invalid_positive_tags(self, tags_list):
+        """Removes any 'positive' tags that are empty, None, or NaN."""
+
+        if not tags_list:
+            return []
+        
+        # Filter out tags where 'positive' is empty, None, or NaN
+        filtered_tags_list = [
+            tag for tag in tags_list
+            if tag['positive'] not in [""] and not pd.isna(tag['positive']) and not isinstance(tag['positive'], int) and not (isinstance(tag['positive'], float) )
+        ]
+
+        # Optionally, print the filtered tags list for debugging
+        self.print_debug(f"===========================FILTERED TAG LIST===========================")
+        for tag in filtered_tags_list:
+            self.print_debug(f"positive[{tag['positive']}] negative[{tag['negative']}] name[{tag['name']}] idx[{tag['idx']}] tag_name[{tag['tag_name']}]")
+        self.print_debug(f"===========================END FILTERED TAG LIST=======================")
+
+        return filtered_tags_list
+
 
     def get_all_prompts(self):
         """ Returns a list of all prompts in the TSV in format [positive, negative, name, idx]. Returns None if the TSV failed to load."""
@@ -8080,7 +8130,7 @@ class TSVTagManager:
         """
         Returns all items with the same tag_name.
         """
-        return [tag for tag in self.tags if tag[4] == tag_name]
+        return [tag for tag in self.tags if tag['tag_name'] == tag_name] or ""
     
     def get_random_with_tag_name(self, tag_name):
         """
@@ -8090,7 +8140,7 @@ class TSVTagManager:
         if tags_with_name:
             return random.choice(tags_with_name)
         else:
-            return None
+            return ""
     
     def increment_counter(self):
         """
@@ -8119,7 +8169,7 @@ class TSVTagManager:
         tags = self.tags
 
         # Extract the set_name (tag_name) from each tag and return a unique list of them
-        tag_names = {tag[4] for tag in tags}  # Set comprehension to ensure uniqueness
+        tag_names = {tag['tag_name'] for tag in tags}  # Set comprehension to ensure uniqueness
         return list(tag_names)
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS

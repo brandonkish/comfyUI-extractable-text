@@ -16,6 +16,7 @@ namespace AI_Toolkit_log_parser
         public MainWindow()
         {
             InitializeComponent();
+            //this.Icon = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Images/ico/icon_256.ico"));
         }
 
         // Struct to hold the safetensor's name and loss value
