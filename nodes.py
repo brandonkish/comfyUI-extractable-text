@@ -8064,7 +8064,7 @@ class BKLoraTestSaveAdvanced:
 
         value = self.convert_to_basic_float(value)
 
-        log_file_path = test_info['results_log']
+        log_file_path = test_info['result_log']
         tsv_writer = TSVWriter(log_file_path)
 
         tsv_writer.append_to_tsv(test_info['lora_name'], test_info['prompt_name'], test_info['round'], value)
