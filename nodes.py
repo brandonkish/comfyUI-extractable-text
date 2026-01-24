@@ -4729,10 +4729,10 @@ class BKSaveAsIcon:
         if subfolder:
             folder = f"{folder}\\{subfolder.strip()}"
 
-        folder = os.path.normpath(folder)
+
 
         if not os.path.isabs(folder):
-            folder = os.path.normpath(os.path.join(self.output_dir, folder))
+            folder = os.path.join(self.output_dir, folder)
 
         path_wo_ext = os.path.join(folder, filename)
 
@@ -4789,7 +4789,7 @@ class BKSaveAsIcon:
             images.append(img_resized)
 
         # Save the images as an ICO file
-        images[0].save(f"{unique_path_wo_ext}.ico", format="ICO", append_images=images[1:], save_all=True)
+        images[0].save(f"{unique_path_wo_ext}.ico", format="ICO", sizes=[(size,size)])
 
         return (f"{unique_path_wo_ext}.ico",)
 
