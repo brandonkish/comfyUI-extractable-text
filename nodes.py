@@ -4653,6 +4653,146 @@ class BKPathFormatter:
         print_debug_bar(self.is_debug)
         return (fullpath,)
 
+#################################################################################################################
+# BK SAVE AS ICON
+##################################################################################################################
+#TODO: Needs overhaul
+class BKSaveAsIcon:
+    def __init__(self):
+        self.output_dir = folder_paths.output_directory
+        self.is_debug = False
+
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Define the types of inputs your node accepts (single "text" input)
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "filename": ("STRING",),            
+                "size": ("INT", {"min": 1, "default": 256}),
+                "add_size_to_name": ("BOOLEAN", { "default": True}),
+                "overwrite": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "seed": ("INT", {"min": 0, "forceInput": True,}),
+                "suffix": ("STRING",),
+                "folder": ("STRING", {"default": f'icon', "multiline": False}),
+                "subfolder": ("STRING",),
+            },
+            "hidden": {
+            },
+        }
+    
+    RETURN_TYPES = ("STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("filepath",)
+    FUNCTION = "process"  # The function name for processing the inputs
+    CATEGORY = "BKNodes"  # A category for the node, adjust as needed
+    LABEL = "BK Path Formatter"  # Default label text
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(self, image, filename, overwrite, size,add_size_to_name, suffix = None, folder = None, subfolder = None, seed = None):
+        return float("nan")
+
+
+    def process(self, image, filename, size, overwrite, add_size_to_name, suffix=None, folder=None, subfolder=None, seed=None):
+        print_debug_header(self.is_debug, "BK SAVE PATH FORMATTER")
+
+        """
+        Convert a batch of images (represented as a torch.Tensor) to an ICO file.
+
+        Args:
+            image (torch.Tensor): The batch of images with shape (batch_size, height, width, channels).
+            filename (str): The base filename for saving the icon.
+            size (int): The size of the icon (height/width) to resize the images to (e.g., 256).
+            add_size_to_name (bool): Whether to add the size to the filename.
+            suffix (str, optional): Suffix to append to the filename.
+            folder (str, optional): Folder where the icon should be saved.
+            subfolder (str, optional): Subfolder within the folder.
+            seed (str, optional): Seed to append to the filename.
+        """
+        
+        filename = filename.strip()
+
+        if seed:
+            filename = f"{filename}_{seed}"
+
+        if add_size_to_name:
+            filename = f"{filename}_{size}"
+        
+        if suffix:
+            filename = f"{filename.strip()}_{suffix.strip()}"
+
+        folder = folder.strip()
+
+        if subfolder:
+            folder = f"{folder}\\{subfolder.strip()}"
+
+        folder = os.path.normpath(folder)
+
+        if not os.path.isabs(folder):
+            folder = os.path.normpath(os.path.join(self.output_dir, folder))
+
+        path_wo_ext = os.path.join(folder, filename)
+
+        unique_path_wo_ext = path_wo_ext
+        unique_id = 0
+        
+        if not overwrite:
+            # Don't overwrite the file if the file already exists
+            while os.path.exists(f"{unique_path_wo_ext}.ico"):
+                unique_id += 1
+                unique_path_wo_ext = f"{path_wo_ext}_{unique_id}.ico"
+
+        if folder.strip() != '':
+            if not os.path.exists(folder.strip()):
+                print(f'The path `{folder.strip()}` specified doesn\'t exist! Creating directory.')
+                os.makedirs(folder, exist_ok=True)  
+
+        print(f"Type of image_batch: {type(image)}")
+
+        # Ensure the image_batch is a torch.Tensor
+        if not isinstance(image, torch.Tensor):
+            raise ValueError("The image_batch must be a torch.Tensor.")
+
+        image = image.cpu().numpy()
+        
+        # Show the shape of the image
+        print(f"Image shape: {image.shape}")
+
+        # Check the shape of the input image batch
+        batch_size, height, width, channels = image.shape
+        print(f"Batch size: {batch_size}, Height: {height}, Width: {width}, Channels: {channels}")
+
+        # Check if the number of channels is valid
+        if channels not in [1, 3, 4]:
+            raise ValueError("The image batch must have 1 (grayscale), 3 (RGB), or 4 (RGBA) channels.")
+
+        # Convert each image in the batch to PIL Image and resize it
+        images = []
+        for i in range(batch_size):
+            # Ensure the image is in uint8 format (0-255 range)
+            img_array = image[i]
+            
+            # If the image is float32, scale it to the 0-255 range
+            if img_array.dtype == np.float32:
+                img_array = np.clip(img_array * 255, 0, 255).astype(np.uint8)
+
+            # Convert the image to a PIL Image object
+            img = Image.fromarray(img_array)
+
+            # Resize the image to the specified size (use LANCZOS for high-quality resizing)
+            img_resized = img.resize((size, size), Image.Resampling.LANCZOS)
+
+            # Append the resized image to the list
+            images.append(img_resized)
+
+        # Save the images as an ICO file
+        images[0].save(f"{unique_path_wo_ext}.ico", format="ICO", append_images=images[1:], save_all=True)
+
+        return (f"{unique_path_wo_ext}.ico",)
+
 
 
 
@@ -8061,6 +8201,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Save Caption Image": BKPathFormatter,
     "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
     "BK Path Formatter": BKPathFormatter,
+    "BK Save As Icon": BKSaveAsIcon,
 
 }
 
