@@ -263,7 +263,6 @@ class TSVTestManager:
             # Validate 'round' to ensure all are positive integers
             for round_value in rounds:
                 if not isinstance(round_value, int) or round_value <= 0:
-                    print(f"round is not a positive integer [{round_value}]")
                     continue  # Skip the current group if any 'round' is invalid
 
             # Avoid division by zero when min_value == max_value
@@ -468,7 +467,7 @@ class TSVTestManager:
             return []
 
         # Sort by rating (ascending order)
-        results.sort(key=lambda x: x.rating)
+        results.sort(key=lambda x: x.rating, reverse= True)
 
         return results
 
@@ -537,6 +536,12 @@ class AITKLogParser:
             return loras_found
         
         return []
+    
+    def get_lora_loss_by_name(self, lora_name:str):
+        for item in self.data:
+            if item.lora_name == lora_name:
+                return item
+        return LossResult("NA", -1, 0.0)
 
     def get_lowest_loss_loras(self, num_results : int, all_loras_in_folder : list[str]=[]):
         """
@@ -7964,6 +7969,7 @@ class BKLoRAAITKTester:
             raise FileNotFoundError(f"Could not find AI-Toolkit [{self.aitk_log_name}] file in the folder and/or user provided path. Can not continue.")
 
         aitk_log_parser = AITKLogParser(log_loc)
+        
 
         test_lora: LossResult = None
         test_prompt : Prompt = None
@@ -8005,6 +8011,11 @@ class BKLoRAAITKTester:
         print(f"{test_prompt}")
 
 
+        results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
+        if test_lora is None:
+            raise EOFError(f"This is not an error. All LoRA tests have completed. The log is save in [{results_file_path}.]")
+
+
         test_info = LoraTestInfo(results_log, test_lora.lora_name, test_prompt.name, -1)
         test_lora_full_path = os.path.join(abs_lora_folder_path, test_lora.lora_name)
 
@@ -8030,16 +8041,16 @@ class BKLoRAAITKTester:
             test_prompt.pos = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.pos)
             test_prompt.neg = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.neg)
         
-        results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
+        
 
         status = f"Processing Lora: {test_lora.lora_name}\n"
-        status = f"Prompt Name: {test_prompt.name}"
+        status += f"Prompt Name: {test_prompt.name}\n"
         status += f"[{current_lora_idx} of {num_of_loras}]\n"
-        status += f"Total Loras Found [{len(all_loras_in_folder)}\n]"
-        status += f"Last Processed: [{datetime.now().strftime('%I:%M:%S %p')}]\n"
+        status += f"Total Loras Found [{len(all_loras_in_folder)}]\n"
+        status += f"Last Processed: [{datetime.now().strftime('%I:%M:%S %p')}]\n\n"
 
 
-        status = self.print_table_to_txt_file(tests_manager.get_top_results(num_of_loras), results_file_path)
+        status = self.print_table_to_txt_file(tests_manager.get_top_results(num_of_loras), status, aitk_log_parser, results_file_path)
 
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
         lora_items = self.selected_loras.updated_lora_items_with_text(os.path.join(rel_lora_folder_path, test_lora.lora_name))
@@ -8058,7 +8069,7 @@ class BKLoRAAITKTester:
         return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
-    def print_table_to_txt_file(self, top_results, status:str, filename="output.txt") -> str:
+    def print_table_to_txt_file(self, top_results, status:str, aitk_parser : AITKLogParser, filename="output.txt") -> str:
         """
         Prints the formatted table to a txt file.
         
@@ -8068,12 +8079,13 @@ class BKLoRAAITKTester:
 
 
         # Add a header for clarity
-        status += f"{'Idx':<5} {'Lora Name':<100} {'Std':<10} {'Avg':<10} {'Rating':<10}\n"
-        status += "-" * 135 + "\n"
+        status += f"{'Idx':<5} {'Lora Name':<100} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
+        status += "-" * 145 + "\n"
 
         # Assuming test_result is an instance of LoRATestAvg
         for idx, test_result in enumerate(top_results):
-            status += f"{idx:<5} {test_result.lora_name:<100} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f}\n"
+            loss = aitk_parser.get_lora_loss_by_name(test_result.lora_name).loss
+            status += f"{idx:<5} {test_result.lora_name:<100} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
 
         # Write to the txt file
         with open(filename, 'w') as f:
