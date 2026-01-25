@@ -115,7 +115,7 @@ class TSVReader:
         
         self.print_debug(f"Loading TSV [{self.filepath}]")
         
-        if self.dataframe:
+        if self.dataframe is not None and not self.dataframe.empty:
             return self.dataframe
         
         if not os.path.exists(self.filepath):
@@ -215,6 +215,101 @@ class TSVTestManager:
                     return True
         return False
 
+    
+    def get_top_results(self, num_results: int) -> list[LoRATestAvg]:
+        """
+        Parse the dataframe to compute SD, AVG, and rating for each 'lora_name' with at least one entry
+        and return the top results sorted by rating.
+        
+        :param num_results: The number of top results to return.
+        :return: A list of LoRATestAvg objects for the top loras.
+        """
+        if not self.tsv_reader:
+            raise RuntimeError(f"Error loading TSVReader, failed to retrieve test results.")
+
+        # Get the dataframe
+        df = self.tsv_reader.to_dataframe()
+
+        # Handle None OR empty DataFrame
+        if df is None or df.empty:
+            print(f"Failed to read TSV Tests. Dataframe empty.")
+            return []
+        
+        results = []
+
+        # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
+        for lora_name, group in df.groupby('lora_name'):
+            values = group['value'].values
+            rounds = group['round'].values
+            prompt_names = group['prompt_name'].values
+
+            # Validate lora_name
+            if not isinstance(lora_name, str):
+                print(f"lora_name is not a string [{lora_name}]")
+                continue
+
+            # Validate prompt_name
+            for prompt_name in prompt_names:
+                if not isinstance(prompt_name, str):
+                    print(f"prompt_name is not a string [{prompt_name}]")
+                    continue  # Skip this group of prompts if any prompt_name is invalid
+
+            # Validate 'value' to ensure all are floats
+            for value in values:
+                if not isinstance(value, float):
+                    print(f"value is not float [{value}]")
+                    continue  # Skip the current group if any 'value' is invalid
+
+            # Validate 'round' to ensure all are positive integers
+            for round_value in rounds:
+                if not isinstance(round_value, int) or round_value <= 0:
+                    print(f"round is not a positive integer [{round_value}]")
+                    continue  # Skip the current group if any 'round' is invalid
+
+            # Avoid division by zero when min_value == max_value
+            min_value = values.min()
+            max_value = values.max()
+
+            if not isinstance(min_value, float):
+                print(f"min_value is not float [{min_value}]")
+                continue
+
+            if not isinstance(max_value, float):
+                print(f"max_value is not float [{max_value}]")
+                continue
+
+            if min_value == max_value:
+                continue  # Skip if all values are the same
+
+            # Normalize values: (value - min) / (max - min)
+            normalized_values = (values - min_value) / (max_value - min_value)
+
+            # Calculate average and standard deviation
+            avg_value = np.mean(normalized_values)
+            stddev_value = np.std(normalized_values)
+
+            # Calculate the rating
+            calc_rating = (self.similarity_weight * avg_value) + ((1 - self.similarity_weight) * stddev_value)
+
+            # Append the results in the format: [lora_name, stddev, avg, rating]
+            results.append(
+                LoRATestAvg(
+                    lora_name=lora_name,
+                    std=stddev_value,
+                    avg=avg_value,
+                    rating=calc_rating
+                )
+            )
+
+        # If no results were computed, return an empty list
+        if not results:
+            return []
+
+        # Sort by rating (descending order)
+        results.sort(key=lambda x: x.rating, reverse=True)
+
+        # Return the top 'num_results' or all if fewer than requested
+        return results[:num_results]
 
 
     def parse_all(self) -> list[LoRATestResult]:
@@ -7756,7 +7851,8 @@ class BKLoRAAITKTester:
         self.test_log_filename = "lora_test_results.ltr"
         self.top_loras_filename = "top_loras.txt"
         self.aitk_log_name = "log.txt"
-        self.result_log_name = "results.trlog"
+        self.result_log_name = "run_results.trlog"
+        self.results_file = "testing_results.txt"
 
     @classmethod
     def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras,aitk_log, tag_to_replace = None):
@@ -7884,7 +7980,12 @@ class BKLoRAAITKTester:
 
         is_found_incomplete_test =False
         # TODO: We need to verify that all of teh loss lora paths are found in the folder, if not skip it.
-        for low_loss_lora in all_low_loss_loras:
+        
+        completed_lora_tests = []
+        current_lora_idx = 0
+        
+        for idx, low_loss_lora in enumerate(all_low_loss_loras):
+            current_lora_idx = idx
             if is_found_incomplete_test:
                 break
             for prompt in all_prompts:
@@ -7931,7 +8032,9 @@ class BKLoRAAITKTester:
             test_prompt.pos = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.pos)
             test_prompt.neg = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.neg)
         
-        status = test_info.__repr__()
+        results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
+        status = self.print_table_to_txt_file(tests_manager.get_top_results(num_of_loras), results_file_path)
+
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
         lora_items = self.selected_loras.updated_lora_items_with_text(os.path.join(rel_lora_folder_path, test_lora.lora_name))
 
@@ -7949,7 +8052,30 @@ class BKLoRAAITKTester:
         return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
+    def print_table_to_txt_file(self, top_results, filename="output.txt") -> str:
+        """
+        Prints the formatted table to a txt file.
         
+        :param top_results: List of LoRATestAvg objects to be printed in the table.
+        :param filename: Name of the output txt file (default is "output.txt").
+        """
+        status = ""
+
+        # Add a header for clarity
+        status += f"{'Idx':<5} {'Lora Name':<30} {'Std':<10} {'Avg':<10} {'Rating':<10}\n"
+        status += "-" * 65 + "\n"
+
+        # Assuming test_result is an instance of LoRATestAvg
+        for idx, test_result in enumerate(top_results):
+            status += f"{idx:<5} {test_result.lora_name:<30} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f}\n"
+
+        # Write to the txt file
+        with open(filename, 'w') as f:
+            f.write(status)
+
+        print(f"Table has been written to {filename}") 
+
+        return status   
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
         top_loras_to_process = []
