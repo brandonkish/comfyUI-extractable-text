@@ -8062,12 +8062,12 @@ class BKLoRAAITKTester:
         status = ""
 
         # Add a header for clarity
-        status += f"{'Idx':<5} {'Lora Name':<30} {'Std':<10} {'Avg':<10} {'Rating':<10}\n"
-        status += "-" * 65 + "\n"
+        status += f"{'Idx':<5} {'Lora Name':<100} {'Std':<10} {'Avg':<10} {'Rating':<10}\n"
+        status += "-" * 135 + "\n"
 
         # Assuming test_result is an instance of LoRATestAvg
         for idx, test_result in enumerate(top_results):
-            status += f"{idx:<5} {test_result.lora_name:<30} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f}\n"
+            status += f"{idx:<5} {test_result.lora_name:<100} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f}\n"
 
         # Write to the txt file
         with open(filename, 'w') as f:
