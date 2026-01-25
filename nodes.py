@@ -1857,7 +1857,7 @@ class BKTSVRandomPrompt:
 
         
         prompt_parser = TSVPromptParser(TSVReader(tsv_file_path))
-        prompts = prompt_parser.get_all_prompts()
+        prompts: list[Prompt] = prompt_parser.get_all_prompts()
         tag_manager = TSVTagManager(prompt_parser)
 
         matching_prompts : list[Prompt] = []
@@ -1879,7 +1879,9 @@ class BKTSVRandomPrompt:
         self.print_debug(f"len(matching_prompts)[{len(matching_prompts)}]")
 
         idx = self.convert_seed_to_idx(len(matching_prompts), seed)
-        selected_prompt = matching_prompts[idx]
+
+        print(f"Type of matching_prompts[idx]: {type(matching_prompts[idx])}")
+        selected_prompt : Prompt = matching_prompts[idx]
 
         
         
@@ -1971,19 +1973,20 @@ class BKTSVRandomPrompt:
         return f"{stripped_name}{self.name_column_suffix}"
 
 
-    def get_all_prompts_w_name_containing(self, prompts: list[Prompt], contains: str):
-
+    def get_all_prompts_w_name_containing(self, prompts: list[Prompt], contains: str) -> list[Prompt]:
         prompts_w_name_containing: list[Prompt] = []
 
+        # Ensure that 'contains' is not empty and is a valid string
+        contains = contains.strip().lower()  # Case-insensitive search
+        
         for prompt in prompts:
-            self.print_debug(f"prompt.name[{prompt.name}]")
-            if prompt.name:
-                self.print_debug(f"prompt.name[{prompt.name}] is true")
-                if contains in prompt.name:
-                    self.print_debug(f"prompt.name[{prompt.name}] contains [{contains}]")
-                    prompts_w_name_containing.append(prompt)
+            # Ensure prompt.name is valid and non-empty
+            if prompt.name and contains in prompt.name.lower():  # Case-insensitive search on name
+                self.print_debug(f"prompt.name[{prompt.name}] contains [{contains}]")
+                prompts_w_name_containing.append(prompt)
 
         return prompts_w_name_containing
+
         
     def convert_seed_to_idx(self, length, seed):
         # Use modulus to ensure the seed is within the bounds of the prompt_column length
@@ -8411,7 +8414,7 @@ class TSVPromptParser:
         return filtered_tags_list
 
 
-    def get_all_prompts(self):
+    def get_all_prompts(self) -> list[Prompt]:
         """ Returns a list of all prompts in the TSV in format [positive, negative, name, idx]. Returns None if the TSV failed to load."""
         if self.dataframe is None:
             print(f"Failed to get all prompts. File failed to load.")
@@ -8447,7 +8450,12 @@ class TSVPromptParser:
                 negative = ''
 
             # Add the valid data to the list
-            parsed_data.append({'postive': positive, 'negative' : negative, 'name': sanitized_name, 'idx': idx})
+            parsed_data.append(Prompt(
+                pos=positive,
+                neg=negative,
+                name=sanitized_name,
+                idx = idx
+            ))
 
         return parsed_data
 
