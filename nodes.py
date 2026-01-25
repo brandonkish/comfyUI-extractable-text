@@ -152,6 +152,7 @@ class TSVTestManager:
 
         # Handle None OR empty DataFrame
         if df is None or df.empty:
+            print(f"Failed to read TSV Tests. Dataframe empty.")
             return []
         
         results = []
@@ -183,7 +184,7 @@ class TSVTestManager:
             stddev_value = np.std(normalized_values)
 
             # Append the results in the format: [lora_name, stddev, avg]
-            results.append([lora_name, stddev_value, avg_value])
+            results.append({'lora_name' :lora_name, 'std' : stddev_value, 'avg' : avg_value})
 
         # If no results were computed, return an empty list
         if not results:
@@ -7560,6 +7561,8 @@ class BKLoRATestAdvanced:
         abs_lora_folder_path = os.path.dirname(lora_full_path)
         log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
         result_log = os.path.join(abs_lora_folder_path, self.result_log_name)
+
+        tests_manager = TSVTestManager(TSVReader(result_log), 0.5)
         
         # If the user's provided log exists, use that instead, else use default log location in folder
         if aitk_log:
