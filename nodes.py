@@ -7575,6 +7575,8 @@ class BKLoRATestAdvanced:
 
         lowest_loss_loras = aitk_log_parser.filter_and_sort(num_of_loras)
 
+        self.print_debug(f"lowest_loss_loras[{len(lowest_loss_loras)}]")
+
         for lowest_lora in lowest_loss_loras:
             print(f"lowest_lora[{lowest_lora}]")
 
@@ -7940,7 +7942,7 @@ class AITKLogParser:
     """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
     def __init__(self, filepath):
         self.filepath = filepath
-        self.data = []
+        self.data = self.parse()
 
     def parse(self):
         # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
@@ -7950,16 +7952,22 @@ class AITKLogParser:
         # Define regex patterns to extract loss values, step numbers, and safetensor names
         loss_pattern = r'loss: ([\d\.e\-\+]+)'  # e.g., loss: 9.734e-02
         step_pattern = r'Saving at step (\d+)'  # e.g., Saving at step 3150
-        tensor_name_pattern = r'Saved checkpoint to [\\|/].+?([A-Za-z0-9_\-]+\.safetensors)'  # e.g., 4ur0r4_WAN2_1_512_V1_000003150.safetensors
+        tensor_name_pattern = r'Saved checkpoint to .+\\(.+\.safetensors)'  # e.g., 4ur0r4_WAN2_1_512_V1_000003150.safetensors
 
         # Iterate over each line of the log data
         lines = log_data.splitlines()
+
+        loras_found = []
+
         loss_value = None
+        step = None
+        tensor_name = None
         for line in lines:
             # Look for lines that contain the loss value and step number
             loss_match = re.search(loss_pattern, line)
             step_match = re.search(step_pattern, line)
             tensor_name_match = re.search(tensor_name_pattern, line)
+
 
             if loss_match:
                 loss_value = float(loss_match.group(1))  # Store the loss value
@@ -7968,23 +7976,29 @@ class AITKLogParser:
                 # When a checkpoint step is found, also grab the safetensor's name
                 step = int(step_match.group(1))  # Extract the step number
 
-                if tensor_name_match:
-                    # Extract the safetensor name (no path, just the filename)
-                    tensor_name = tensor_name_match.group(1)
+            if tensor_name_match and loss_value is not None and step is not None:
+                # Extract the safetensor name (no path, just the filename)
+                tensor_name = tensor_name_match.group(1)
 
-                    # Append the extracted data as a dictionary
-                    self.data.append({
-                        "name": tensor_name,
-                        "loss": loss_value,
-                        "step": step
-                    })
+            if tensor_name and loss_value and step:
+                # Append the extracted data as a dictionary
+                loras_found.append({
+                    "name": tensor_name,
+                    "loss": loss_value,
+                    "step": step
+                })
 
+                tensor_name = None
+                step = None
                 loss_value = None  # Reset the loss value after saving checkpoint info
 
         # Sort the data by loss value in ascending order
-        self.data.sort(key=lambda x: x["loss"])
+        loras_found.sort(key=lambda x: x["loss"])
 
-        return json.dumps(self.data, indent=4)
+        if loras_found:
+            return loras_found
+        
+        return []
 
     def filter_and_sort(self, num_results, ignore_list=[]):
         """
@@ -7994,6 +8008,8 @@ class AITKLogParser:
         :param ignore_list: List of safetensor names to exclude from the results.
         :return: A sorted list of dictionaries with the smallest loss values, excluding ignored items.
         """
+        
+
         # Filter out the items in the ignore list
         filtered_data = [item for item in self.data if item['name'] not in [ignore['name'] for ignore in ignore_list]]
 
