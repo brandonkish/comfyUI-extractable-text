@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from email.mime import image
 from torch import Tensor
 import os
@@ -44,9 +45,65 @@ HEADER_LENGTH = 100
 MAX_SAFETENSOR_CHUNKS_TO_READ = 1000
 
 
+@dataclass
+class PromptTag:
+    pos: str
+    neg: str
+    name: str
+    idx: int
+    tag_name: str
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+    
+@dataclass
+class LossResult:
+    lora_name: str
+    step: int
+    loss: float
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+    
+@dataclass
+class LoRATestResult:
+    lora_name: str
+    prompt_name : str
+    round: int
+    value: float
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+
+@dataclass
+class LoRATestAvg:
+    lora_name: str
+    std: float
+    avg: float
+    rating: float
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+    
+@dataclass
+class Prompt:
+    pos: str
+    neg: str
+    name: str
+    idx: int
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+    
 class TSVReader:
     def __init__(self, tsv_filepath: str):
         self.filepath = tsv_filepath
+        self.dataframe= None
         self.is_debug = True
 
     def print_debug(self, string):
@@ -55,7 +112,12 @@ class TSVReader:
 
     def to_dataframe(self):
         """Reads the TSV file into a pandas dataframe. If file does not exist, or fails to load, returns an empty dataframe."""
+        
         self.print_debug(f"Loading TSV [{self.filepath}]")
+        
+        if self.dataframe:
+            return self.dataframe
+        
         if not os.path.exists(self.filepath):
             print(f"File [{self.filepath}] does not exist. Could not open file.")
             return pd.DataFrame()
@@ -95,60 +157,158 @@ class TSVReader:
             print(f"Error parsing the TSV file [{self.filepath}]: {e}")
             return pd.DataFrame()  # Return an empty DataFrame if parsing fails
 
+        self.dataframe = df
         return df
+
+
+    
+@dataclass
+class LoraTestInfo:
+    test_log: str
+    lora_name: str
+    prompt_name: str
+    round: int
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
+    
+@dataclass
+class LoraTestResult:
+    lora_name: str
+    prompt_name: str
+    round: int
+    value: float
+
+    # Returns the object as a JSON string
+    def __repr__(self):
+        return json.dumps(asdict(self), indent=4)
 
 class TSVTestManager:
     def __init__(self, tsv_reader: TSVReader, similartiy_weight: float):
-        self.results = self.parse(tsv_reader, similartiy_weight)
+        if not tsv_reader:
+            raise ValueError(f"TSVReader is None. Failed to get test results.")
+        
+        if similartiy_weight > 1.0:
+            raise ValueError(f"Max similartiy weighting is 1.0, provided weighting [{similartiy_weight}]")
+        
+        if similartiy_weight < 0.0:
+            raise ValueError(f"Min similartiy weighting is 0.0, provided weighting [{similartiy_weight}]")
+        
+        self.tsv_reader = tsv_reader
         self.is_debug = True
+        self.similarity_weight = similartiy_weight
+        self.all_tests = None
+        self.all_avgs = None
 
-    def get_all_results(self):
-        """Returns a list of all test results in format [lora_name, std_dev, avg, rating]. Returns None if the TSV could not be loaded."""
-        return self.results
 
-    def get_top_results(self, lora_count:int):
+    def get_top_results(self, lora_count:int) -> list[LoRATestAvg]:
         """Gets all the results from the TSV file. If the TSV file does not exist or fails to load, returns None"""
 
-        if self.results is None:
+        test_avgs = self.parse_avgs()
+
+        if test_avgs is None:
             return None
 
         # Ensure lora_count does not exceed the number of available results
-        lora_count = min(lora_count, len(self.get_all_results()))
+        lora_count = min(lora_count, len(test_avgs))
 
         # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
         top_loras = [
-            [lora_name, stddev_value, avg_value, rating] 
+            LoRATestAvg(lora_name, stddev_value, avg_value, rating)
             for (lora_name, stddev_value, avg_value), rating in self.get_all_results()[:lora_count]
         ]
         
         return top_loras
 
-    def add_rating(self, all_lora_results, simularity_weight):
-        
-        # Initialize an empty list to store loras with their ratings
-        results_with_ratings = []
-        
-        # Calculate ratings for each lora
-        for lora in all_lora_results:
-            lora_name, stddev_value, avg_value = lora
-            # Calculate the rating using the given formula
-            rating = (simularity_weight * avg_value) + ((1 - simularity_weight) * stddev_value)
-            # Append the lora along with its rating
-            results_with_ratings.append((lora, rating))
-        
-        return results_with_ratings
-    
     def print_debug(self, string):
         if self.is_debug:
             print (f"{string}")
 
-    def parse(self, tsv_reader: TSVReader, simularity_weight):
+    def is_test_performed(self, lora_name: str, prompt_name: str) -> bool:
+        for test in self.parse_all():
+            if test.lora_name == lora_name:
+                if test.prompt_name == prompt_name:
+                    return True
+        return False
+
+
+
+    def parse_all(self) -> list[LoRATestResult]:
+            """
+            Parse the dataframe to compute SD and AVG for each set and return it as a list
+            of [lora_name, std_dev, avg, rating].
+            Returns an empty list if the TSV file failed to parse, or if the dataframe is empty.
+            """
+            if self.all_tests is not None:
+                return self.all_tests
+
+            if not self.tsv_reader:
+                raise RuntimeError(f"Error loading TSVReader, failed to retrieve test results.")
+
+            df = self.tsv_reader.to_dataframe()
+
+            # Handle None OR empty DataFrame
+            if df is None or df.empty:
+                print(f"Failed to read TSV Tests. Dataframe empty.")
+                return []
+            
+            results = []
+
+            # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
+            for lora_name, prompt_name, round, value in df.iterrows():
+
+                if not isinstance(round, int):
+                    print(f"round is not int [{round}]")
+                    continue
+                
+                if not isinstance(lora_name, str):
+                    print(f"lora_name is not a string [{lora_name}]")
+                    continue
+                
+                if not isinstance(prompt_name, str):
+                    print(f"prompt_name is not a string [{prompt_name}]")
+                    continue
+                
+                if not isinstance(value, float):
+                    print(f"value is not float [{value}]")
+                    continue
+                
+                if not prompt_name:
+                    print(f"prompt_name is empty")
+                    continue
+                
+                if not lora_name:
+                    print(f"lora_name is empty")
+
+                # Append the results in the format: [lora_name, stddev, avg]
+                results.append(
+                    LoRATestResult(
+                        lora_name=lora_name,
+                        prompt_name=prompt_name,
+                        round=round,
+                        value=value
+                    ))
+            
+            self.all_tests = results
+
+            return results
+
+
+    def parse_avgs(self) -> list[LoRATestAvg]:
         """
         Parse the dataframe to compute SD and AVG for each set and return it as a list
         of [lora_name, std_dev, avg, rating].
         Returns an empty list if the TSV file failed to parse, or if the dataframe is empty.
         """
-        df = tsv_reader.to_dataframe()
+
+        if self.all_avgs:
+            return self.all_avgs
+        
+        if not self.tsv_reader:
+                raise RuntimeError(f"Error loading TSVReader, failed to retrieve test results.")
+    
+        df = self.tsv_reader.to_dataframe()
 
         # Handle None OR empty DataFrame
         if df is None or df.empty:
@@ -160,6 +320,31 @@ class TSVTestManager:
         # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
         for lora_name, group in df.groupby('lora_name'):
             values = group['value'].values
+            rounds = group['round'].values
+            prompt_names = group['prompt_name'].values
+
+            # Validate lora_name
+            if not isinstance(lora_name, str):
+                print(f"lora_name is not a string [{lora_name}]")
+                continue
+
+            # Validate prompt_name
+            for prompt_name in prompt_names:
+                if not isinstance(prompt_name, str):
+                    print(f"prompt_name is not a string [{prompt_name}]")
+                    continue  # Skip this group of prompts if any prompt_name is invalid
+
+            # Validate 'value' to ensure all are floats
+            for value in values:
+                if not isinstance(value, float):
+                    print(f"value is not float [{value}]")
+                    continue  # Skip the current group if any 'value' is invalid
+
+            # Validate 'round' to ensure all are positive integers
+            for round_value in rounds:
+                if not isinstance(round_value, int) or round_value <= 0:
+                    print(f"round is not a positive integer [{round_value}]")
+                    continue  # Skip the current group if any 'round' is invalid
 
             # Avoid division by zero when min_value == max_value
             min_value = values.min()
@@ -168,11 +353,11 @@ class TSVTestManager:
             if not isinstance(min_value, float):
                 print(f"min_value is not float [{min_value}]")
                 continue
-            
+
             if not isinstance(max_value, float):
-                print(f"max_value is not float [{min_value}]")
+                print(f"max_value is not float [{max_value}]")
                 continue
-          
+
             if min_value == max_value:
                 continue  # Skip if all values are the same
 
@@ -183,18 +368,25 @@ class TSVTestManager:
             avg_value = np.mean(normalized_values)
             stddev_value = np.std(normalized_values)
 
+            # Calculate the rating
+            calc_rating = (self.similarity_weight * avg_value) + ((1 - self.similarity_weight) * stddev_value)
+
             # Append the results in the format: [lora_name, stddev, avg]
-            results.append({'lora_name' :lora_name, 'std' : stddev_value, 'avg' : avg_value})
+            results.append(
+                LoRATestAvg(
+                    lora_name=lora_name,
+                    std=stddev_value,
+                    avg=avg_value,
+                    rating=calc_rating
+                )
+            )
 
         # If no results were computed, return an empty list
         if not results:
             return []
 
-        # Add ratings based on similarity weight
-        results = self.add_rating(results, simularity_weight)
-
         # Sort by rating (ascending order)
-        results.sort(key=lambda x: x[3])
+        results.sort(key=lambda x: x.rating)
 
         return results
 
@@ -1668,10 +1860,10 @@ class BKTSVRandomPrompt:
         prompts = prompt_parser.get_all_prompts()
         tag_manager = TSVTagManager(prompt_parser)
 
-        matching_prompts = []
+        matching_prompts : list[Prompt] = []
         # If a name was provided get the prompt by name
         if prompt_name_search:
-            matching_prompts = self.get_all_prompts_starting_with_name(prompts, prompt_name_search)
+            matching_prompts = self.get_all_prompts_w_name_containing(prompts, prompt_name_search)
 
             for prompt in matching_prompts:
                 self.print_debug(f"matching prompt[{prompt}]")
@@ -1696,16 +1888,16 @@ class BKTSVRandomPrompt:
                 rand_tag =  tag_manager.get_random_with_tag_name(next_tag)
                 
 
-                self.print_debug(f"positive[{rand_tag['positive']}] negative[{rand_tag['negative']}] name[{rand_tag['name']}] idx[{rand_tag['idx']}] tag_name[{rand_tag['tag_name']}]")
+                self.print_debug(f"rand_tag [{rand_tag}]")
 
 
-                selected_prompt['positive'] = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['positive'], selected_prompt['positive'])
-                selected_prompt['negative'] = self.replace_tag_in_prompt(rand_tag['tag_name'], rand_tag['negative'], selected_prompt['negative'])
+                selected_prompt.pos = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.pos, selected_prompt.pos)
+                selected_prompt.neg = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.neg, selected_prompt.neg)
         
         # Replace name tag in prompt if user has specified one
         if name_tag:        
-            selected_prompt['positive'] = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt['positive'])
-            selected_prompt['negative'] = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt['negative'])
+            selected_prompt.pos = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt.pos)
+            selected_prompt.neg = self.replace_tag_in_prompt(name_tag, subject_name, selected_prompt.neg)
         
         
         # TODO: Make a toggleable option to select if the name of the tags should be output in the name as well or not
@@ -1720,7 +1912,7 @@ class BKTSVRandomPrompt:
         # TODO: Filter by keywords, allow for searching of keywords in the prompt such as "pink" or "standing"
 
 
-        return selected_prompt['positive'], selected_prompt['negative'], selected_prompt['name'], idx, seed
+        return selected_prompt.pos, selected_prompt.neg, selected_prompt.name, idx, seed
     
     def replace_tag_in_prompt(self, tag_name, value, prompt,):
         return prompt.replace(tag_name, value)
@@ -1779,20 +1971,19 @@ class BKTSVRandomPrompt:
         return f"{stripped_name}{self.name_column_suffix}"
 
 
-    def get_all_prompts_starting_with_name(self, prompts, start_with_name):
+    def get_all_prompts_w_name_containing(self, prompts: list[Prompt], contains: str):
 
-        all_matching_prompts = []
+        prompts_w_name_containing: list[Prompt] = []
 
         for prompt in prompts:
-            positive, negative, name, idx = prompt
-            self.print_debug(f"prompt['name'][{prompt['name']}]")
-            if prompt['name']:
-                self.print_debug(f"prompt['name'][{prompt['name']}] is true")
-                if name.startswith(str(prompt['name'])):
-                    self.print_debug(f"prompt['name'][{prompt['name']}] starts with [{start_with_name}]")
-                    all_matching_prompts.append(prompt)
+            self.print_debug(f"prompt.name[{prompt.name}]")
+            if prompt.name:
+                self.print_debug(f"prompt.name[{prompt.name}] is true")
+                if contains in prompt.name:
+                    self.print_debug(f"prompt.name[{prompt.name}] contains [{contains}]")
+                    prompts_w_name_containing.append(prompt)
 
-        return all_matching_prompts
+        return prompts_w_name_containing
         
     def convert_seed_to_idx(self, length, seed):
         # Use modulus to ensure the seed is within the bounds of the prompt_column length
@@ -6740,7 +6931,7 @@ class BKLoRATest:
             for lora in found_loras:
                 self.print_debug(f"Found LoRA: [{lora}]")
 
-        prompts_df = self.read_file_to_dataframe(prompts_tsv_filepath)
+        prompts_df : pd.DataFrame = self.read_file_to_dataframe(prompts_tsv_filepath)
 
         if prompts_df.empty:
             raise ValueError("Error: The prompts TSV file is empty. No rows to process.")
@@ -6752,13 +6943,13 @@ class BKLoRATest:
         if not valid_prompts or len(valid_prompts) <= 0:
             raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
 
-        positive = ""
-        negative = ""
-        prompt_name = ""
-        filename = ""
-        lora_name = ""
-        lora_path = ""
-        most_frequent_ss_tag = ""
+        positive:str = ""
+        negative:str = ""
+        prompt_name:str = ""
+        filename:str = ""
+        lora_name:str = ""
+        lora_path:str = ""
+        most_frequent_ss_tag:str = ""
 
         # Go through all the loras one at a time and generate images from the prompts IF the image does not already exist
         # Since the LoRAs are the outter loop, it will generate all prompts for one LoRA, then move to the next LoRA
@@ -6788,10 +6979,10 @@ class BKLoRATest:
                     # If the user has specified a replacement tag, try to replace it in the prompts with the most frequent tag from the LoRA metadata
                     # Wich should be its activation tag
                     if self.is_user_want_to_replace_tag(tag_to_replace):
-                        freq_tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
+                        freq_tag : str = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
 
                                     # If everything suceeded, replace the tag in the positive prompt
-                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, freq_tag['tag'])
+                        positive = self.replace_tag_in_prompt(positive, tag_to_replace, freq_tag)
 
                      # If the LoRA was loaded, apply the lora
                     if len(lora_items) > 0:
@@ -6822,7 +7013,7 @@ class BKLoRATest:
     def is_image_not_generated(self, filepath):
         return not os.path.exists(f"{filepath}")
 
-    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
+    def replace_tag_in_prompt(self, prompt:str, tag:str, lora_tag:str):
         return prompt.replace(tag, lora_tag)
     
     def is_user_want_to_replace_tag(self, tag_to_replace):
@@ -6947,10 +7138,10 @@ class BKLoRATest:
             return None
 
 
-    def get_lora_name_wo_extension(self, lora_filepath):
+    def get_lora_name_wo_extension(self, lora_filepath:str) -> str:
         return os.path.splitext(os.path.basename(lora_filepath))[0]
     
-    def get_all_valid_prompts(self, prompts_df):
+    def get_all_valid_prompts(self, prompts_df:pd.DataFrame) -> list:
         processed_data = []
         processed_names = set()  # Local set to track names we've already seen
 
@@ -6968,7 +7159,7 @@ class BKLoRATest:
                 if self.is_valid_filename(name, index):
                     if not self.is_duplicate_name(name, processed_names, index):
                         if self.is_valid_prompt(positive, index):
-                            processed_data.append(self.process_row( positive, negative, name))
+                            processed_data.append(self.process_row( positive, negative, name, index))
         
         return processed_data
     
@@ -7000,8 +7191,13 @@ class BKLoRATest:
             return False
         return True
 
-    def process_row(self, name, positive, negative):
-        return [name, positive, negative if negative is not None else ""]
+    def process_row(self, name:str, positive:str, negative:str, idx: int) -> Prompt:
+        return Prompt(
+            pos=positive,
+            neg=negative if negative is not None else "",
+            name=name,
+            idx=idx
+        )
     
 
     def read_file_to_dataframe(self, tsv_file_path):
@@ -7358,7 +7554,7 @@ class BKLoraAutoSwitcher:
 
         lora_name = self.get_lora_name_from_relative_path(lora_paths[idx])
         lora_full_path = folder_paths.get_full_path("loras", lora_paths[idx])
-        tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()['tag']
+        tag = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
 
         print_debug_bar(self.is_debug)
         return(result[0], result[1], lora_name, idx, tag)
@@ -7939,6 +8135,9 @@ class BKLoRATestAdvanced:
         # Use list comprehension to filter strings that start with the given prefix
         return [s for s in string_list if s.startswith(prefix)]
 
+
+
+
 ###############################################################################################################
 # LOG PARSER
 ###############################################################################################################
@@ -7946,9 +8145,9 @@ class AITKLogParser:
     """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
     def __init__(self, filepath):
         self.filepath = filepath
-        self.data = self.parse()
+        self.data : list[LossResult] = self.parse()
 
-    def parse(self):
+    def parse(self) -> list[LossResult]:
         # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
         with open(self.filepath, 'rb') as file:
             log_data = file.read().decode('utf-8', errors='ignore')
@@ -7961,7 +8160,7 @@ class AITKLogParser:
         # Iterate over each line of the log data
         lines = log_data.splitlines()
 
-        loras_found = []
+        loras_found : list[LossResult] = []
 
         loss_value = None
         step = None
@@ -7986,25 +8185,26 @@ class AITKLogParser:
 
             if tensor_name and loss_value and step:
                 # Append the extracted data as a dictionary
-                loras_found.append({
-                    "name": tensor_name,
-                    "loss": loss_value,
-                    "step": step
-                })
+                loras_found.append(LossResult(
+                    name = tensor_name,
+                    loss = loss_value,
+                    step = step
+
+                ))
 
                 tensor_name = None
                 step = None
                 loss_value = None  # Reset the loss value after saving checkpoint info
 
         # Sort the data by loss value in ascending order
-        loras_found.sort(key=lambda x: x["loss"])
+        loras_found.sort(key=lambda x: x.loss)
 
         if loras_found:
             return loras_found
         
         return []
 
-    def filter_and_sort(self, num_results, ignore_list=[]):
+    def filter_and_sort(self, num_results : int, ignore_list : list[LossResult]=[]):
         """
         Filters the data by loss value and excludes items in the ignore list.
         
@@ -8015,10 +8215,10 @@ class AITKLogParser:
         
 
         # Filter out the items in the ignore list
-        filtered_data = [item for item in self.data if item['name'] not in [ignore['name'] for ignore in ignore_list]]
+        filtered_data : list[LossResult] = [item for item in self.data if item.lora_name not in [ignore.lora_name for ignore in ignore_list]]
 
         # Sort the filtered data by loss value (ascending order)
-        filtered_data.sort(key=lambda x: x["loss"])
+        filtered_data.sort(key=lambda x: x.loss)
 
         # Return the top 'num_results' safetensors from the sorted filtered data
         return filtered_data[:num_results]
@@ -8074,22 +8274,24 @@ class BKLoraTestSaveAdvanced:
     LABEL = "BK Lora Test Save (Advanced)"  # Default label text
     OUTPUT_NODE = True
 
+
+
     def get_log_path(self, folder, filename):
         return folder.strip('\\').strip('/') + "\\" + filename
 
-    def process(self, test_info, value):
+    def process(self, test_info : str, value):
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
 
-        test_info = json.loads(test_info)
+        test_info_dict = json.loads(test_info)
+        test_info: LoraTestInfo = LoraTestInfo(**test_info_dict)
 
         value = self.convert_to_basic_float(value)
 
-        log_file_path = test_info['result_log']
-        tsv_writer = TSVWriter(log_file_path)
+        tsv_writer = TSVWriter(test_info.test_log)
 
-        tsv_writer.append_to_tsv(test_info['lora_name'], test_info['prompt_name'], test_info['round'], value)
+        tsv_writer.append_to_tsv(test_info.lora_name, test_info.prompt_name, test_info.round, value)
 
-        status = f"LORA[{test_info['lora_name']}] - PROMPT[{test_info['prompt_name']}] - ROUND[{test_info['round']}] - VALUE[{value}]"
+        status = f"LORA[{test_info.lora_name}] - PROMPT[{test_info.prompt_name}] - ROUND[{test_info.round}] - VALUE[{value}]"
         print(f"BKAdvLoRAResultsTSVWriter: {status}")
         return(status,)
     
@@ -8105,8 +8307,12 @@ class BKLoraTestSaveAdvanced:
         # If it's a single value, just convert it to a float
         return float(np_float)
 
+from dataclasses import dataclass, asdict
 
 
+
+
+    
 
 class TSVPromptParser:
     def __init__(self, tsv_reader: TSVReader):
@@ -8126,23 +8332,11 @@ class TSVPromptParser:
             print(f"Row {row_idx}: Invalid characters in 'name'. Sanitized name: '{sanitized_name}'")
             return sanitized_name
         return name
-    
-    def get_all_prompts_to_lower_name(self):
-        """Returns a list of all prompts in the TSV in format [positive, negative, name, idx] where all names are set to lowercase. Returns None if the TSV failed to load."""
-        
-        sanitized_prompts = []  # Fixed the typo here
-        for prompt in self.get_all_prompts():
-            if prompt['name']:
-                prompt['name'] = prompt['name'].lower()
-            sanitized_prompts.append(prompt)
 
-        return sanitized_prompts
-    
-    
-    def get_all_tags(self):
+    def get_all_tags(self) -> list[PromptTag]:
         """Returns a list of all Tags in the TSV in the format of JSON objects [positive, negative, name, idx, tag_name]. Returns an empty list if the TSV failed to load."""
         # Initialize an empty list to hold the tags
-        tags_list = []
+        tags_list: list[PromptTag] = []
 
         # Find all sets based on the column names
         # A dictionary to map base name to its corresponding positive, negative, and name columns
@@ -8178,17 +8372,17 @@ class TSVPromptParser:
                 name_value = row.get(columns['name'], "") if columns['name'] else ""
 
                 # Add the tag as a dictionary (JSON object) to the list
-                tags_list.append({
-                    "positive": positive_value,
-                    "negative": negative_value,
-                    "name": name_value,
-                    "idx": idx,
-                    "tag_name": tag_name
-                })
+                tags_list.append(PromptTag(
+                    pos = positive_value,
+                    neg = negative_value,
+                    name = name_value,
+                    idx = idx,
+                    tag_name = tag_name
+                ))
 
         self.print_debug(f"===========================TAG LIST===========================")
         for tag in tags_list:
-            self.print_debug(f"positive[{tag['positive']}] negative[{tag['negative']}] name[{tag['name']}] idx[{tag['idx']}] tag_name[{tag['tag_name']}]")
+            self.print_debug(tag)
         self.print_debug(f"===========================END TAG LIST=======================")
 
         tags_list = self.remove_invalid_positive_tags(tags_list)
@@ -8196,7 +8390,7 @@ class TSVPromptParser:
         return tags_list
     
     
-    def remove_invalid_positive_tags(self, tags_list):
+    def remove_invalid_positive_tags(self, tags_list : list[PromptTag]) -> list[PromptTag]:
         """Removes any 'positive' tags that are empty, None, or NaN."""
 
         if not tags_list:
@@ -8205,13 +8399,13 @@ class TSVPromptParser:
         # Filter out tags where 'positive' is empty, None, or NaN
         filtered_tags_list = [
             tag for tag in tags_list
-            if tag['positive'] not in [""] and not pd.isna(tag['positive']) and not isinstance(tag['positive'], int) and not (isinstance(tag['positive'], float) )
+            if tag.pos not in [""] and not pd.isna(tag.pos)
         ]
 
         # Optionally, print the filtered tags list for debugging
         self.print_debug(f"===========================FILTERED TAG LIST===========================")
         for tag in filtered_tags_list:
-            self.print_debug(f"positive[{tag['positive']}] negative[{tag['negative']}] name[{tag['name']}] idx[{tag['idx']}] tag_name[{tag['tag_name']}]")
+            self.print_debug(tag)
         self.print_debug(f"===========================END FILTERED TAG LIST=======================")
 
         return filtered_tags_list
@@ -8295,7 +8489,7 @@ class STMetadataParser:
     def __init__(self, safetensors_reader: STMetadataReader):
         self.metadata = safetensors_reader.read_metadata_header()
     
-    def get_most_frequent_tag(self) -> dict:
+    def get_most_frequent_tag(self) -> str:
         """ Returns the most frequent tag from the ss_tag_frequency metadata as a dictionary with 'tag' and 'count'."""
         tag_sets = self.metadata.get('__metadata__', {}).get('ss_tag_frequency', {})
         max_tag = ""
@@ -8307,9 +8501,8 @@ class STMetadataParser:
                     max_value = frequency
                     max_tag = tag
 
-        # Create a dictionary with both max tag and max value
-        result = {"tag": max_tag, "count": max_value}
-        return result
+
+        return max_tag
 
     def print_debug(self, message):
         if self.is_debug:
@@ -8324,13 +8517,13 @@ class TSVTagManager:
         self.tags = prompt_parser.get_all_tags()
         self.incremental_pos = 0  # Initialize the class counter
         
-    def get_tags_by_name(self, tag_name):
+    def get_tags_by_name(self, tag_name) -> list[PromptTag]:
         """
         Returns all items with the same tag_name.
         """
-        return [tag for tag in self.tags if tag['tag_name'] == tag_name] or ""
+        return [tag for tag in self.tags if tag.tag_name == tag_name] or ""
     
-    def get_random_with_tag_name(self, tag_name):
+    def get_random_with_tag_name(self, tag_name: str) -> PromptTag:
         """
         Returns a random item with the specified tag_name.
         """
@@ -8338,7 +8531,7 @@ class TSVTagManager:
         if tags_with_name:
             return random.choice(tags_with_name)
         else:
-            return ""
+            return PromptTag("NA","NA","NA",-1,"NA")
     
     def increment_counter(self):
         """
@@ -8367,7 +8560,7 @@ class TSVTagManager:
         tags = self.tags
 
         # Extract the set_name (tag_name) from each tag and return a unique list of them
-        tag_names = {tag['tag_name'] for tag in tags}  # Set comprehension to ensure uniqueness
+        tag_names = {tag.tag_name for tag in tags}  # Set comprehension to ensure uniqueness
         return list(tag_names)
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
