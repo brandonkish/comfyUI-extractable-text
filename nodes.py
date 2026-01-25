@@ -7559,6 +7559,7 @@ class BKLoRATestAdvanced:
         lora_full_path = folder_paths.get_full_path("loras", temp_lora)
         abs_lora_folder_path = os.path.dirname(lora_full_path)
         log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
+        result_log = os.path.join(abs_lora_folder_path, self.result_log_name)
         
         # If the user's provided log exists, use that instead, else use default log location in folder
         if aitk_log:
@@ -7587,7 +7588,7 @@ class BKLoRATestAdvanced:
 
         lora_name = self.get_name_wo_ext(temp_lora)
 
-        test_info = json.dumps({"result_log" : log_loc, "lora_name": lora_name, "prompt_name" : "PLACE_HOLDER", "round" : -1})
+        test_info = json.dumps({"result_log" : result_log, "lora_name": lora_name, "prompt_name" : "PLACE_HOLDER", "round" : -1})
         
         """
         all_prompts = prompt_parser.get_all_prompts_to_lower_name()
