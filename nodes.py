@@ -237,9 +237,15 @@ class TSVTestManager:
                 return []
             
             results = []
+            print("=================================DATAFRAME================================")
+            print(df)
 
-            # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
-            for lora_name, prompt_name, round, value in df.iterrows():
+            for index, row in df.iterrows():
+
+                lora_name = row['lora_name']
+                prompt_name = row['prompt_name']
+                round = row['round']
+                value = row['value']
 
                 if not isinstance(round, int):
                     print(f"round is not int [{round}]")
@@ -7906,6 +7912,24 @@ class BKLoRAAITKTester:
         print(f"test_lora_full_path{test_lora_full_path}")
         
         lora_trigger = STMetadataParser(STMetadataReader(test_lora_full_path)).get_most_frequent_tag()
+
+        tag_manager = TSVTagManager(prompt_parser)
+
+                # Replace all tags in the prompt
+        for next_tag in tag_manager.get_all_tags():
+                rand_tag =  tag_manager.get_random_with_tag_name(next_tag)
+                
+
+                self.print_debug(f"rand_tag [{rand_tag}]")
+
+
+                test_prompt.pos = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.pos, test_prompt.pos)
+                test_prompt.neg = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.neg, test_prompt.neg)
+        
+        # Replace name tag in prompt if user has specified one
+        if tag_to_replace:        
+            test_prompt.pos = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.pos)
+            test_prompt.neg = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.neg)
         
         status = test_info.__repr__()
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
@@ -8065,8 +8089,8 @@ class BKLoRAAITKTester:
     def is_image_not_generated(self, filepath):
         return not os.path.exists(f"{filepath}")
 
-    def replace_tag_in_prompt(self, prompt, tag, lora_tag):
-        return prompt.replace(tag, lora_tag)
+    def replace_tag_in_prompt(self, tag_name, value, prompt,):
+        return prompt.replace(tag_name, value)
     
     def is_user_want_to_replace_tag(self, tag_to_replace):
         return tag_to_replace is not None and tag_to_replace.strip() != ""
