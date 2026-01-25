@@ -206,6 +206,8 @@ class TSVTestManager:
             print (f"{string}")
 
     def is_test_performed(self, lora_name: str, prompt_name: str) -> bool:
+
+        self.print_debug(f"STUCK HERE")
         for test in self.parse_all():
             self.print_debug(f"test.lora_name[{test.lora_name}] == lora_name[{lora_name}]")
             if test.lora_name == lora_name:
@@ -7842,6 +7844,7 @@ class BKLoRAAITKTester:
         # We have already confrimed there is at least one lora in the folder.
         lora_full_path = folder_paths.get_full_path("loras", all_loras_in_folder[0])
         abs_lora_folder_path = os.path.dirname(lora_full_path)
+        rel_lora_folder_path = os.path.dirname(all_loras_in_folder[0])
         log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
         results_log = os.path.join(abs_lora_folder_path, self.result_log_name)
         tests_manager : TSVTestManager = TSVTestManager(TSVReader(results_log), 0.5)
@@ -7873,12 +7876,17 @@ class BKLoRAAITKTester:
         self.print_debug(f"len(all_prompts)[{len(all_prompts)}]")
         self.print_debug(f"len(all_low_loss_loras)[{len(all_low_loss_loras)}]")
 
+        is_found_incomplete_test =False
         # TODO: We need to verify that all of teh loss lora paths are found in the folder, if not skip it.
         for low_loss_lora in all_low_loss_loras:
+            if is_found_incomplete_test:
+                break
             for prompt in all_prompts:
                 if not tests_manager.is_test_performed(low_loss_lora.lora_name, prompt.name):
                     test_lora = low_loss_lora
                     test_prompt = prompt
+                    is_found_incomplete_test = True
+                    break
 
                     #lora_test_info = self.do_test(low_loss_lora, prompt)
 
@@ -7887,86 +7895,21 @@ class BKLoRAAITKTester:
         # TODO: Store the relative path to the lora, NOT just its name. Right now we have a workaround but
         #       It is garbage.
 
-        
+        print(f"BREAKOUT")
+        print(f"{test_lora}")
+        print(f"{test_prompt}")
 
 
         test_info = LoraTestInfo(results_log, test_lora.lora_name, test_prompt.name, -1)
-        test_lora_full_path = os.path.join(abs_lora_folder_path, f"{test_lora.lora_name}.safetensors")
+        test_lora_full_path = os.path.join(abs_lora_folder_path, test_lora.lora_name)
 
-        
-        """
-        all_prompts = prompt_parser.get_all_prompts_to_lower_name()
-
-
-        if not all_prompts or len(all_prompts) <= 0:
-            raise ValueError("Error: No valid prompts found after processing the prompt TSV file.")
-
-        test_results_file_path = self.get_test_results_filepath(results_folder)
-        self.print_debug(f"test_results_file_path[{test_results_file_path}]")
-
-        tests_manager = TSVTestManager(TSVReader(test_results_file_path), 0.5)
-
-        first_round = 1
-        round_result = []
-
-        round = 1
-
-
-        has_lora_completed_round = self.has_lora_completed_round()
-        """
-        
-
-        """
-         
-        # if first round, create rating for all images, else, process the top loras
-        for round in range(1, len(all_prompts) + 1):
-            loras_to_process = []
-
-            if round == first_round:
-                self.print_debug(f"First Round.")
-                loras_to_process = all_loras_in_folder
-            
-            else:
-                self.print_debug(f"Round [{round}]")
-                loras_to_process = self.get_top_loras(tests_manager, num_of_loras)
-
-            self.print_debug(f"len(loras_to_process)[{len(loras_to_process)}]")
-
-            # If the results file failed to read, set it to all loras, (Probably first run)
-            if loras_to_process is None or len(loras_to_process) == 0:
-                loras_to_process = all_loras_in_folder
-    
-            round_result = self.do_round(all_prompts, tests_manager, loras_to_process, round)
-
-            self.print_debug(f"round_result[{round_result}]")
-
-            print(f"round_result [{round_result}]")
-            if round_result:
-                break
-
-
-        if not round_result:
-            top_results = tests_manager.get_top_results(num_of_loras)
-            if top_results is None:
-                print(f"Could not load TSV file to get top results. Is this the first run and no results generated yet?")
-            else:
-                self.save_and_print_list(top_results, )
-            raise ValueError(f"No more LoRAs left to process, all have been processed. Top LoRAs Saved in {self.top_loras_filename}.")
-            
-        lora_path, positive, negative, prompt_name = round_result
-        lora_name = self.get_lora_name_wo_extension(lora_path)
-        lora_full_path = folder_paths.get_full_path("loras", lora_path)
-
-
-        filename = self.get_image_filename(lora_name, prompt_name)
-
-        """
+        print(f"test_lora_full_path{test_lora_full_path}")
         
         lora_trigger = STMetadataParser(STMetadataReader(test_lora_full_path)).get_most_frequent_tag()
         
         status = test_info.__repr__()
-
-        lora_items = self.selected_loras.updated_lora_items_with_text(lora)
+        # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
+        lora_items = self.selected_loras.updated_lora_items_with_text(os.path.join(rel_lora_folder_path, test_lora.lora_name))
 
         if len(lora_items) > 0:
                         for item in lora_items:
