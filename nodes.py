@@ -8031,6 +8031,14 @@ class BKLoRAAITKTester:
             test_prompt.neg = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.neg)
         
         results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
+
+        status = f"Processing Lora: {test_lora.lora_name}\n"
+        status = f"Prompt Name: {test_prompt.name}"
+        status += f"[{current_lora_idx} of {num_of_loras}]\n"
+        status += f"Total Loras Found [{len(all_loras_in_folder)}\n]"
+        status += f"Last Processed: [{datetime.now().strftime('%I:%M:%S %p')}]\n"
+
+
         status = self.print_table_to_txt_file(tests_manager.get_top_results(num_of_loras), results_file_path)
 
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
@@ -8050,14 +8058,14 @@ class BKLoRAAITKTester:
         return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
-    def print_table_to_txt_file(self, top_results, filename="output.txt") -> str:
+    def print_table_to_txt_file(self, top_results, status:str, filename="output.txt") -> str:
         """
         Prints the formatted table to a txt file.
         
         :param top_results: List of LoRATestAvg objects to be printed in the table.
         :param filename: Name of the output txt file (default is "output.txt").
         """
-        status = ""
+
 
         # Add a header for clarity
         status += f"{'Idx':<5} {'Lora Name':<100} {'Std':<10} {'Avg':<10} {'Rating':<10}\n"
