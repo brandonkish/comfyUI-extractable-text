@@ -201,32 +201,13 @@ class TSVTestManager:
         self.all_tests = None
         self.all_avgs = None
 
-
-    def get_top_results(self, lora_count:int) -> list[LoRATestAvg]:
-        """Gets all the results from the TSV file. If the TSV file does not exist or fails to load, returns None"""
-
-        test_avgs = self.parse_avgs()
-
-        if test_avgs is None:
-            return None
-
-        # Ensure lora_count does not exceed the number of available results
-        lora_count = min(lora_count, len(test_avgs))
-
-        # Extract the top loras (the ones with the smallest ratings) and add the rating to the output
-        top_loras = [
-            LoRATestAvg(lora_name, stddev_value, avg_value, rating)
-            for (lora_name, stddev_value, avg_value), rating in self.get_all_results()[:lora_count]
-        ]
-        
-        return top_loras
-
     def print_debug(self, string):
         if self.is_debug:
             print (f"{string}")
 
     def is_test_performed(self, lora_name: str, prompt_name: str) -> bool:
         for test in self.parse_all():
+            self.print_debug(f"test.lora_name[{test.lora_name}] == lora_name[{lora_name}]")
             if test.lora_name == lora_name:
                 if test.prompt_name == prompt_name:
                     return True
@@ -389,6 +370,106 @@ class TSVTestManager:
         results.sort(key=lambda x: x.rating)
 
         return results
+
+###############################################################################################################
+# LOG PARSER
+###############################################################################################################
+class AITKLogParser:
+    """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.data : list[LossResult] = self.parse()
+
+    def parse(self) -> list[LossResult]:
+        # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
+        with open(self.filepath, 'rb') as file:
+            log_data = file.read().decode('utf-8', errors='ignore')
+
+        # Define regex patterns to extract loss values, step numbers, and safetensor names
+        loss_pattern = r'loss: ([\d\.e\-\+]+)'  # e.g., loss: 9.734e-02
+        step_pattern = r'Saving at step (\d+)'  # e.g., Saving at step 3150
+        tensor_name_pattern = r'Saved checkpoint to .+\\(.+\.safetensors)'  # e.g., 4ur0r4_WAN2_1_512_V1_000003150.safetensors
+
+        # Iterate over each line of the log data
+        lines = log_data.splitlines()
+
+        loras_found : list[LossResult] = []
+
+        loss_value = None
+        step = None
+        tensor_name = None
+        for line in lines:
+            # Look for lines that contain the loss value and step number
+            loss_match = re.search(loss_pattern, line)
+            step_match = re.search(step_pattern, line)
+            tensor_name_match = re.search(tensor_name_pattern, line)
+
+
+            if loss_match:
+                loss_value = float(loss_match.group(1))  # Store the loss value
+
+            if step_match and loss_value is not None:
+                # When a checkpoint step is found, also grab the safetensor's name
+                step = int(step_match.group(1))  # Extract the step number
+
+            if tensor_name_match and loss_value is not None and step is not None:
+                # Extract the safetensor name (no path, just the filename)
+                tensor_name = tensor_name_match.group(1)
+
+            if tensor_name and loss_value and step:
+                # Append the extracted data as a dictionary
+                loras_found.append(LossResult(
+                    lora_name = tensor_name,
+                    loss = loss_value,
+                    step = step
+
+                ))
+
+                tensor_name = None
+                step = None
+                loss_value = None  # Reset the loss value after saving checkpoint info
+
+        # Sort the data by loss value in ascending order
+        loras_found.sort(key=lambda x: x.loss)
+
+        if loras_found:
+            return loras_found
+        
+        return []
+
+    def get_lowest_loss_loras(self, num_results : int, all_loras_in_folder : list[str]=[]):
+        """
+        Filters the data by loss value and excludes items in the ignore list.
+        
+        :param num_results: Number of safetensors to return, sorted by loss value.
+        :param ignore_list: List of safetensor names to exclude from the results.
+        :return: A sorted list of dictionaries with the smallest loss values, excluding ignored items.
+        """
+        # TODO: verify the loras actually exist in the folder, and if not then skip it and select another.
+        # TODO: Notify user if a lora is not found. Probably just pass in the abs path to the lora folder
+        #           and then test it here? Or probably outside, and request another batch
+        
+
+        filtered_data: list[LossResult] = []
+
+        # Only add loras to the filtered list that are found in the folder
+        for item in self.data:
+            found_paths = []
+            
+            for lora in all_loras_in_folder:
+                # Check if the lora_name ends with item.lora_name
+                if lora.endswith(f"{item.lora_name}"):
+                    # If it does, append the lora to found_path
+                    found_paths.append(lora)
+
+            if len(found_paths) > 0:
+                filtered_data.append(item)
+
+        # Sort the filtered data by loss value (ascending order)
+        filtered_data.sort(key=lambda x: x.loss)
+
+        # Return the top 'num_results' safetensors from the sorted filtered data
+        return filtered_data[:num_results]
 
 def print_debug_header(is_debug, name):
     if is_debug:
@@ -7658,7 +7739,7 @@ class BKSimpleLoraLoader:
 
 #TODO: make it so that the input is a dropdown list with folderpaths. The folder paths should be the folder paths of the loras loaded, The node will then test between all .safetensors in the specified folder path. I think we can have a dropdown of folder paths, by passing the list to the input. I have seen this done somewhere before.
 
-class BKLoRATestAdvanced:
+class BKLoRAAITKTester:
     def __init__(self):
         self.is_debug = True
         self.selected_loras = SelectedLoras()
@@ -7704,7 +7785,7 @@ class BKLoRATestAdvanced:
               
          },
          "optional": {
-            "tag_to_replace": ("STRING",),
+            "tag_to_replace": ("STRING", {"default" : "<NAME>"}),
             "aitk_log": ("STRING",),
          }}
 
@@ -7753,15 +7834,20 @@ class BKLoRATestAdvanced:
         if all_loras_in_folder is None or len(all_loras_in_folder) <= 0:
             raise ValueError(f"No LoRAs found in folder: [{lora_folder}]")
         
-        temp_lora = all_loras_in_folder[0]
+
 
         prompt_parser = TSVPromptParser(TSVReader(prompts_tsv_filepath))
-        lora_full_path = folder_paths.get_full_path("loras", temp_lora)
+        
+        # Use first lora in folder to get the full path to the selected lora folder
+        # We have already confrimed there is at least one lora in the folder.
+        lora_full_path = folder_paths.get_full_path("loras", all_loras_in_folder[0])
         abs_lora_folder_path = os.path.dirname(lora_full_path)
         log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
-        result_log = os.path.join(abs_lora_folder_path, self.result_log_name)
+        results_log = os.path.join(abs_lora_folder_path, self.result_log_name)
+        tests_manager : TSVTestManager = TSVTestManager(TSVReader(results_log), 0.5)
+   
 
-        tests_manager = TSVTestManager(TSVReader(result_log), 0.5)
+        
         
         # If the user's provided log exists, use that instead, else use default log location in folder
         if aitk_log:
@@ -7776,21 +7862,37 @@ class BKLoRATestAdvanced:
 
         aitk_log_parser = AITKLogParser(log_loc)
 
-        lowest_loss_loras = aitk_log_parser.filter_and_sort(num_of_loras)
-
-        self.print_debug(f"lowest_loss_loras[{len(lowest_loss_loras)}]")
-
-        for lowest_lora in lowest_loss_loras:
-            print(f"lowest_lora[{lowest_lora}]")
+        test_lora: LossResult = None
+        test_prompt : Prompt = None
 
 
+
+        all_prompts = prompt_parser.get_all_prompts()
+        all_low_loss_loras = aitk_log_parser.get_lowest_loss_loras(num_of_loras, all_loras_in_folder)
+
+        self.print_debug(f"len(all_prompts)[{len(all_prompts)}]")
+        self.print_debug(f"len(all_low_loss_loras)[{len(all_low_loss_loras)}]")
+
+        # TODO: We need to verify that all of teh loss lora paths are found in the folder, if not skip it.
+        for low_loss_lora in all_low_loss_loras:
+            for prompt in all_prompts:
+                if not tests_manager.is_test_performed(low_loss_lora.lora_name, prompt.name):
+                    test_lora = low_loss_lora
+                    test_prompt = prompt
+
+                    #lora_test_info = self.do_test(low_loss_lora, prompt)
+
+
+
+        # TODO: Store the relative path to the lora, NOT just its name. Right now we have a workaround but
+        #       It is garbage.
 
         
 
 
-        lora_name = self.get_name_wo_ext(temp_lora)
+        test_info = LoraTestInfo(results_log, test_lora.lora_name, test_prompt.name, -1)
+        test_lora_full_path = os.path.join(abs_lora_folder_path, f"{test_lora.lora_name}.safetensors")
 
-        test_info = json.dumps({"result_log" : result_log, "lora_name": lora_name, "prompt_name" : "PLACE_HOLDER", "round" : -1})
         
         """
         all_prompts = prompt_parser.get_all_prompts_to_lower_name()
@@ -7860,9 +7962,15 @@ class BKLoRATestAdvanced:
 
         """
         
-        lora_trigger = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
+        lora_trigger = STMetadataParser(STMetadataReader(test_lora_full_path)).get_most_frequent_tag()
         
-        status = f"{test_info}"
+        status = test_info.__repr__()
+
+        lora_items = self.selected_loras.updated_lora_items_with_text(lora)
+
+        if len(lora_items) > 0:
+                        for item in lora_items:
+                            result = item.apply_lora(result[0], result[1])
 
         positive = "PLACEHOLDER"
         negative = "PLACEHOLDER"
@@ -7871,9 +7979,10 @@ class BKLoRATestAdvanced:
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
         "MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status"
-        return(model, clip, positive, negative, lora_name,  lora_trigger, test_info, status)
+        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
+        
 
     def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
         top_loras_to_process = []
@@ -8141,90 +8250,7 @@ class BKLoRATestAdvanced:
 
 
 
-###############################################################################################################
-# LOG PARSER
-###############################################################################################################
-class AITKLogParser:
-    """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
-    def __init__(self, filepath):
-        self.filepath = filepath
-        self.data : list[LossResult] = self.parse()
 
-    def parse(self) -> list[LossResult]:
-        # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
-        with open(self.filepath, 'rb') as file:
-            log_data = file.read().decode('utf-8', errors='ignore')
-
-        # Define regex patterns to extract loss values, step numbers, and safetensor names
-        loss_pattern = r'loss: ([\d\.e\-\+]+)'  # e.g., loss: 9.734e-02
-        step_pattern = r'Saving at step (\d+)'  # e.g., Saving at step 3150
-        tensor_name_pattern = r'Saved checkpoint to .+\\(.+\.safetensors)'  # e.g., 4ur0r4_WAN2_1_512_V1_000003150.safetensors
-
-        # Iterate over each line of the log data
-        lines = log_data.splitlines()
-
-        loras_found : list[LossResult] = []
-
-        loss_value = None
-        step = None
-        tensor_name = None
-        for line in lines:
-            # Look for lines that contain the loss value and step number
-            loss_match = re.search(loss_pattern, line)
-            step_match = re.search(step_pattern, line)
-            tensor_name_match = re.search(tensor_name_pattern, line)
-
-
-            if loss_match:
-                loss_value = float(loss_match.group(1))  # Store the loss value
-
-            if step_match and loss_value is not None:
-                # When a checkpoint step is found, also grab the safetensor's name
-                step = int(step_match.group(1))  # Extract the step number
-
-            if tensor_name_match and loss_value is not None and step is not None:
-                # Extract the safetensor name (no path, just the filename)
-                tensor_name = tensor_name_match.group(1)
-
-            if tensor_name and loss_value and step:
-                # Append the extracted data as a dictionary
-                loras_found.append(LossResult(
-                    name = tensor_name,
-                    loss = loss_value,
-                    step = step
-
-                ))
-
-                tensor_name = None
-                step = None
-                loss_value = None  # Reset the loss value after saving checkpoint info
-
-        # Sort the data by loss value in ascending order
-        loras_found.sort(key=lambda x: x.loss)
-
-        if loras_found:
-            return loras_found
-        
-        return []
-
-    def filter_and_sort(self, num_results : int, ignore_list : list[LossResult]=[]):
-        """
-        Filters the data by loss value and excludes items in the ignore list.
-        
-        :param num_results: Number of safetensors to return, sorted by loss value.
-        :param ignore_list: List of safetensor names to exclude from the results.
-        :return: A sorted list of dictionaries with the smallest loss values, excluding ignored items.
-        """
-        
-
-        # Filter out the items in the ignore list
-        filtered_data : list[LossResult] = [item for item in self.data if item.lora_name not in [ignore.lora_name for ignore in ignore_list]]
-
-        # Sort the filtered data by loss value (ascending order)
-        filtered_data.sort(key=lambda x: x.loss)
-
-        # Return the top 'num_results' safetensors from the sorted filtered data
-        return filtered_data[:num_results]
 
 
 ###############################################################################################################
@@ -8644,7 +8670,7 @@ NODE_CLASS_MAPPINGS = {
     "BK Get Next Caption File": BKGetNextCaptionFile,
     "BK Image Sync": BKImageSync,
     "BK LoRA Test": BKLoRATest,
-    "BK LoRA Test (Advanced)": BKLoRATestAdvanced,
+    "BK LoRA AITK Tester": BKLoRAAITKTester,
     "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
     "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
     "BK Save Caption Image": BKPathFormatter,
