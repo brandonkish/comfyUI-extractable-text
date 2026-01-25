@@ -237,7 +237,7 @@ class TSVTestManager:
         
         results = []
 
-        # Group by 'lora_name' and calculate the normalized values, mean, and standard deviation
+        # Group by 'lora_name' and calculate mean and standard deviation
         for lora_name, group in df.groupby('lora_name'):
             values = group['value'].values
             rounds = group['round'].values
@@ -281,12 +281,9 @@ class TSVTestManager:
             if min_value == max_value:
                 continue  # Skip if all values are the same
 
-            # Normalize values: (value - min) / (max - min)
-            normalized_values = (values - min_value) / (max_value - min_value)
-
-            # Calculate average and standard deviation
-            avg_value = np.mean(normalized_values)
-            stddev_value = np.std(normalized_values)
+            # Calculate average and standard deviation without normalization
+            avg_value = np.mean(values)
+            stddev_value = np.std(values)
 
             # Calculate the rating
             calc_rating = (self.similarity_weight * avg_value) + ((1 - self.similarity_weight) * stddev_value)
@@ -310,6 +307,7 @@ class TSVTestManager:
 
         # Return the top 'num_results' or all if fewer than requested
         return results[:num_results]
+
 
 
     def parse_all(self) -> list[LoRATestResult]:
