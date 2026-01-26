@@ -207,9 +207,7 @@ class TSVTestManager:
 
     def is_test_performed(self, lora_name: str, prompt_name: str) -> bool:
 
-        self.print_debug(f"STUCK HERE")
         for test in self.parse_all():
-            self.print_debug(f"test.lora_name[{test.lora_name}] == lora_name[{lora_name}]")
             if test.lora_name == lora_name:
                 if test.prompt_name == prompt_name:
                     return True
@@ -7427,10 +7425,6 @@ class BKLoRATest:
             abs_folder = path
 
         return abs_folder
-    
-    def filter_strings_by_prefix(self, string_list, prefix):
-        # Use list comprehension to filter strings that start with the given prefix
-        return [s for s in string_list if s.startswith(prefix)]
 
 def get_line_by_index(index: int, text: str) -> str:
     lines = text.splitlines()
@@ -7888,6 +7882,7 @@ class BKLoRAAITKTester:
                 "multiline": False,
             }),
             "num_of_loras": ("INT", {"default" : 1, "min" : 1}),
+            "lora_name_padding": ("INT",{"default" : 0, "min" : 0})
             
               
          },
@@ -7907,9 +7902,6 @@ class BKLoRAAITKTester:
         if not os.path.isabs(path):
             path = os.path.join(self.output_dir, path)
         return path
-    
-    def get_name_wo_ext(self, filepath):
-        return os.path.splitext(os.path.basename(filepath))[0]
 
     def process(self, model, clip, lora_folder, aitk_log, prompts_tsv_filepath, num_of_loras, tag_to_replace = None):
         self.print_debug(f"\n\n\n\n")
@@ -7919,12 +7911,6 @@ class BKLoRAAITKTester:
         aitk_log = aitk_log.strip("\"").strip()
         prompts_tsv_filepath = prompts_tsv_filepath.strip("\"").strip()
         result = (model, clip,"","")
-        positive = ""
-        negative = ""
-        prompt_name = ""
-        filename = ""
-        lora_path = ""
-        lora_name = ""
         lora_trigger = ""
 
         # Fail early if any of the required inputs are empty
@@ -7966,7 +7952,7 @@ class BKLoRAAITKTester:
 
         self.print_debug(f"log_loc[{log_loc}]")
         if not os.path.exists(log_loc):
-            raise FileNotFoundError(f"Could not find AI-Toolkit [{self.aitk_log_name}] file in the folder and/or user provided path. Can not continue.")
+            raise FileNotFoundError(f"Could not find AI-Toolkit [{self.aitk_log_name}] output log in the folder and/or user provided path. Can not continue.")
 
         aitk_log_parser = AITKLogParser(log_loc)
         
@@ -7983,9 +7969,7 @@ class BKLoRAAITKTester:
         self.print_debug(f"len(all_low_loss_loras)[{len(all_low_loss_loras)}]")
 
         is_found_incomplete_test =False
-        # TODO: We need to verify that all of teh loss lora paths are found in the folder, if not skip it.
-        
-        completed_lora_tests = []
+        # TODO: We need to verify that all of the loss lora paths are found in the folder, if not skip it.
         current_lora_idx = 0
         
         for idx, low_loss_lora in enumerate(all_low_loss_loras):
@@ -7999,16 +7983,13 @@ class BKLoRAAITKTester:
                     is_found_incomplete_test = True
                     break
 
-                    #lora_test_info = self.do_test(low_loss_lora, prompt)
-
-
 
         # TODO: Store the relative path to the lora, NOT just its name. Right now we have a workaround but
         #       It is garbage.
 
-        print(f"BREAKOUT")
-        print(f"{test_lora}")
-        print(f"{test_prompt}")
+
+        self.print_debug(f"{test_lora}")
+        self.print_debug(f"{test_prompt}")
 
 
         results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
@@ -8019,7 +8000,7 @@ class BKLoRAAITKTester:
         test_info = LoraTestInfo(results_log, test_lora.lora_name, test_prompt.name, -1)
         test_lora_full_path = os.path.join(abs_lora_folder_path, test_lora.lora_name)
 
-        print(f"test_lora_full_path{test_lora_full_path}")
+        self.print_debug(f"test_lora_full_path{test_lora_full_path}")
         
         lora_trigger = STMetadataParser(STMetadataReader(test_lora_full_path)).get_most_frequent_tag()
 
@@ -8048,9 +8029,9 @@ class BKLoRAAITKTester:
         status += f"[{current_lora_idx} of {num_of_loras}]\n"
         status += f"Total Loras Found [{len(all_loras_in_folder)}]\n"
         status += f"Last Processed: [{datetime.now().strftime('%I:%M:%S %p')}]\n\n"
-
-
-        status = self.print_table_to_txt_file(tests_manager.get_top_results(num_of_loras), status, aitk_log_parser, results_file_path)
+        top_lora_test_results = tests_manager.get_top_results(num_of_loras)
+        status += self.print_table_to_txt_file(top_lora_test_results, aitk_log_parser)
+        self.write_status_to_file(status, results_file_path)
 
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
         lora_items = self.selected_loras.updated_lora_items_with_text(os.path.join(rel_lora_folder_path, test_lora.lora_name))
@@ -8066,269 +8047,41 @@ class BKLoRAAITKTester:
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
         "MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status"
-        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
+        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__())
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
-    def print_table_to_txt_file(self, top_results, status:str, aitk_parser : AITKLogParser, filename="output.txt") -> str:
+    def write_status_to_file(self, status, filename="status.txt"):
+                # Write to the txt file
+        with open(filename, 'w') as f:
+            f.write(status)
+
+        print(f"Table has been written to {filename}") 
+
+    def print_table_to_txt_file(self, top_results, aitk_parser : AITKLogParser, lora_name_padding) -> str:
         """
         Prints the formatted table to a txt file.
         
         :param top_results: List of LoRATestAvg objects to be printed in the table.
         :param filename: Name of the output txt file (default is "output.txt").
         """
-
+        status = ""
+        lora_name_padding += 30
 
         # Add a header for clarity
-        status += f"{'Idx':<5} {'Lora Name':<100} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
-        status += "-" * 145 + "\n"
+        status += f"{'Idx':<5} {'Lora Name':<loranamepadding} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
+        status += "-" * 45 + lora_name_padding + "\n"
 
         # Assuming test_result is an instance of LoRATestAvg
         for idx, test_result in enumerate(top_results):
             loss = aitk_parser.get_lora_loss_by_name(test_result.lora_name).loss
-            status += f"{idx:<5} {test_result.lora_name:<100} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
-
-        # Write to the txt file
-        with open(filename, 'w') as f:
-            f.write(status)
-
-        print(f"Table has been written to {filename}") 
+            status += f"{idx:<5} {test_result.lora_name:<loranamepadding} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
 
         return status   
 
-    def get_top_loras(self, tests_manager: TSVTestManager, num_of_loras):
-        top_loras_to_process = []
-
-        # Printing the table header with proper alignment
-        print(f"{'Rank':<5}{'Lora Path':<30}{'Deviation':<15}{'Likeness':<10}{'Rating':<6}")
-        print("-" * 70)  # Just a separator for the table
-        
-        # Iterate over the top results and print each in a formatted row
-        top_results = tests_manager.get_top_results(num_of_loras)
-        
-        if top_results is None:
-            print(f"No top results generated yet. Returning all results to be tested.")
-            return None
-        
-        for rank, top_lora_test in enumerate(tests_manager.get_top_results(num_of_loras), start=1):
-            lora_path, sd, avg, rating = top_lora_test
-            print(f"{rank:<5}{lora_path:<30}{sd:<15}{avg:<10}{rating:<6}")
-            top_loras_to_process.append(lora_path)
-
-        return top_loras_to_process
-
-
-
-    def save_and_print_list(self, data, filename):
-        # Sort the data by the 'rating' value (index 3)
-        sorted_data = sorted(data, key=lambda x: x[3])
-        
-        # Print the table header
-        print(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}")
-        
-        # Iterate through the sorted data and print each row
-        for idx, item in enumerate(sorted_data, start=1):
-            name, sd, avg, rating = item
-            print(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}")
-        
-        # Save the data to a text file
-        with open(filename, "w") as file:
-            file.write(f"{'rank':<5}{'name':<20}{'deviation':<15}{'likeness':<10}{'rating':<5}\n")
-            for idx, item in enumerate(sorted_data, start=1):
-                name, sd, avg, rating = item
-                file.write(f"{idx:<5}{name:<20}{sd:<15}{avg:<10}{rating:<5}\n")
-
-    def is_all_loras_have_start_rating(self, all_lora_rel_paths, test_results):
-        # Extract the lora names from the test results
-        lora_names_in_test_results = [result[0] for result in test_results]
-        
-        # Iterate through the list of all_lora_rel_paths and check if each filename (without extension)
-        # is present in the test_results' lora names
-        for lora_path in all_lora_rel_paths:
-            # Extract the filename without extension
-            lora_filename = os.path.splitext(os.path.basename(lora_path))[0]
-            
-            # Check if the lora_filename is in the lora_names_in_test_results
-            if lora_filename not in lora_names_in_test_results:
-                return False
-        
-        # If all lora files are found, return True
-        return True
-
-
-    def get_lora_name_from_relative_path(self, lora_rel_path):
-        return os.path.splitext(os.path.basename(lora_rel_path))[0]
-
-
-    def do_round(self, prompts, test_manager: TSVTestManager, lora_rel_paths, round):
-        for lora_rel_path in lora_rel_paths:
-            self.print_debug(f"lora_rel_path[{lora_rel_path}]")
-            self.print_debug(f"round[{round}]")
-            missing_test = self.get_next_missing_test(prompts, lora_rel_path, round, test_manager)
-            if missing_test:
-                return missing_test
-        
-        return None
-
-    def get_next_missing_test(self, prompts, lora_rel_path, current_round, test_manager: TSVTestManager):
-        for prev_round in range(1, current_round + 1):
-            self.print_debug(f"prev_round[{prev_round}]")
-
-            prev_test_prompt = self.get_prompt_for_round(prompts, prev_round)
-            self.print_debug(f"prev_test_prompt[{prev_test_prompt}]")
-
-            
-            if not prev_test_prompt:
-                raise ValueError(f"When generating images for lora [{lora_rel_path}], failed to find prompt for round [{current_round}].")
-
-            positive, negative, prompt_name, prompt_idx = prev_test_prompt
-            if not self.has_lora_completed_round(test_manager, lora_rel_path, prompt_name):
-                return (lora_rel_path, positive, negative, prompt_name)
-
-        return None
-
-
-    
-    def get_prompt_for_round(self, prompts, idx):
-        for prompt in prompts:
-            if prompt[3] == idx:  # check if idx matches round_idx
-                return prompt
-        return None  # return None if no match found
-        
-    def get_image_filename(self, prompt_name, lora_rel_path):
-        lora_name = self.get_lora_name_from_relative_path(lora_rel_path)
-        return f"{prompt_name}_{lora_name}"
-    
-    def has_lora_completed_round(self, test_manager: TSVTestManager, lora, round_to_test):
-            
-            self.print_debug(f"lora_rel_path_search[{lora}]")
-            self.print_debug(f"round[{round}]")
-            self.print_debug(f"==============================TEST ROUNDS===============================")
-            for testround in test_manager.get_all_results():
-                self.print_debug(f"test_manager.get_all_results()[{testround}]")
-
-            has_completed_round = any(lora_path == lora and round == round_to_test for lora_path, prompt_name, round, value in test_manager.get_all_results())
-            
-            self.print_debug(f"has_completed_round[{has_completed_round}]")
-            return has_completed_round
-
-
-
-
-    def get_test_results_filepath(self, test_results_folder):
-        return f"{test_results_folder.strip('\\').strip('/').strip()}\\{self.test_log_filename}"
-
-    def get_most_frequent_ss_tag(self, ss_tag_frequency_dict):
-        max_tag = None
-        max_value = -1
-
-        for tag, tag_info in ss_tag_frequency_dict.items():
-            for inner_tag, value in tag_info.items():
-                # Check if the value is higher than the current max_value
-                if value > max_value:
-                    max_value = value
-                    max_tag = inner_tag
-        
-        return max_tag
-    
-    def is_image_not_generated(self, filepath):
-        return not os.path.exists(f"{filepath}")
-
+   
     def replace_tag_in_prompt(self, tag_name, value, prompt,):
         return prompt.replace(tag_name, value)
     
-    def is_user_want_to_replace_tag(self, tag_to_replace):
-        return tag_to_replace is not None and tag_to_replace.strip() != ""
-
-    def extract_highest_tag_from_metadata(self, metadata):
-        """
-        Extracts the tag with the highest value from the 'ss_tag_frequency' inside the metadata.
-        
-        Args:
-            metadata (dict): The parsed metadata containing 'ss_tag_frequency'.
-        
-        Returns:
-            str: The tag with the highest frequency.
-        """
-        ss_tag_frequency_str = metadata.get("__metadata__", {}).get("ss_tag_frequency")
-        
-        if not ss_tag_frequency_str:
-            print("Error: No 'ss_tag_frequency' found in metadata.")
-            return None
-        
-        # Parse the JSON string from 'ss_tag_frequency'
-        try:
-            tag_frequency = json.loads(ss_tag_frequency_str)
-        except json.JSONDecodeError:
-            print("Error: Unable to decode JSON for 'ss_tag_frequency'.")
-            return None
-        
-        # Find the tag with the highest frequency
-        max_tag = None
-        max_value = -1
-
-        for outer_tag, inner_dict in tag_frequency.items():
-            for inner_tag, value in inner_dict.items():
-                # Check if the value is higher than the current max_value
-                if value > max_value:
-                    max_value = value
-                    max_tag = inner_tag
-        
-        return max_tag
-    
-    def is_end_of_metadata_found(self, buffer):
-        if not buffer:
-            return False
-        if len(buffer) < 2:
-            return False
-        is_first_brace_found = False
-        brace_count = 0
-
-        for byte in buffer:
-            if byte == ord('{'):
-                brace_count += 1
-                is_first_brace_found = True
-            elif byte == ord('}') and is_first_brace_found:
-                brace_count -= 1
-            
-            if brace_count == 0 and is_first_brace_found:
-                return True
-
-        return False
-    
-    def parse_metadata_from_buffer_as_str(self, buffer):
-        if not buffer:
-            return None
-        if len(buffer) < 2:
-            return None
-        is_first_brace_found = False
-        brace_count = 0
-
-        for idx, byte in enumerate(buffer):
-            if byte == ord('{'):
-                brace_count += 1
-                is_first_brace_found = True
-            elif byte == ord('}') and is_first_brace_found:
-                brace_count -= 1
-            
-            if brace_count == 0 and is_first_brace_found:
-                return buffer[:idx + 1].decode('utf-8')
-
-        return None
-    
-    def add_outer_braces(self, metadata_str):
-        return f'{{{metadata_str.strip()}}}'
-    
-    def turnicate_buffer_to_start_of_metadata(self, buffer, metadata_start):
-        is_metadata_start_found = False
-        start_idx = buffer.find(metadata_start)
-        if start_idx != -1:
-           is_metadata_start_found = True
-           buffer = buffer[start_idx:]
-        return [buffer, is_metadata_start_found]
-
-    def get_lora_name_wo_extension(self, lora_filepath):
-        return os.path.splitext(os.path.basename(lora_filepath))[0]
-
     def print_debug(self, string):
         if self.is_debug:
             print (f"{string}")
@@ -8345,14 +8098,6 @@ class BKLoRAAITKTester:
         
         return matching_paths    
 
-
-    def get_abs_folder(self, path, root_folder):
-        if self.is_relative_path(path):
-            abs_folder = self.get_absolute_folder_path(root_folder, path)
-        else:
-            abs_folder = path
-
-        return abs_folder
     
     def filter_strings_by_prefix(self, string_list, prefix):
         # Use list comprehension to filter strings that start with the given prefix
