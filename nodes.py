@@ -473,14 +473,43 @@ class TSVTestManager:
 # LOG PARSER
 ###############################################################################################################
 class AITKLogParser:
-    """This class will parse an AI-Toolkit log and collect the loss for each safetensor."""
-    def __init__(self, filepath):
-        self.filepath = filepath
-        self.data : list[LossResult] = self.parse()
+    """This class parses AI-Toolkit logs for the loss for each safetensor LoRA in the log.
+       It then returns the lora names with their loss. If a filepath is specified it will parse
+        the specific file, if a folder is provided it will search for all files ending with "log.txt"
+        and return a combined list with all losses found in all logs."""
+    def __init__(self, path: str):
+        self.path = path
+        # Determine if the path is a file or a folder and process accordingly
+        if os.path.isdir(self.path):
+            self.data: list[LossResult] = self.parse_all_logs_in_folder()
+        elif os.path.isfile(self.path):
+            self.data: list[LossResult] = self.parse(self.path)  # Process the single file
+        else:
+            raise ValueError(f"Invalid path: {self.path}. Must be a valid file or directory.")
 
-    def parse(self) -> list[LossResult]:
+
+    def parse_all_logs_in_folder(self) -> list[LossResult]:
+        """
+        Parses all 'log.txt' files in the specified folder path, combining the results
+        into a master list of LossResult objects.
+        
+        :return: A list of LossResult objects from all log files.
+        """
+        combined_results = []
+        
+        # Iterate over all files in the provided folder path
+        for filename in os.listdir(self.path):
+            # Check if the file ends with 'log.txt'
+            if filename.endswith("log.txt"):
+                file_path = os.path.join(self.path, filename)
+                # Call parse() for each log file and extend the combined_results list
+                combined_results.extend(self.parse(file_path))
+        
+        return combined_results
+    
+    def parse(self, filepath: str) -> list[LossResult]:
         # Open the log file as binary, read it as a UTF-8 string, ignoring invalid characters
-        with open(self.filepath, 'rb') as file:
+        with open(filepath, 'rb') as file:
             log_data = file.read().decode('utf-8', errors='ignore')
 
         # Define regex patterns to extract loss values, step numbers, and safetensor names
@@ -491,7 +520,7 @@ class AITKLogParser:
         # Iterate over each line of the log data
         lines = log_data.splitlines()
 
-        loras_found : list[LossResult] = []
+        loras_found: list[LossResult] = []
 
         loss_value = None
         step = None
@@ -501,7 +530,6 @@ class AITKLogParser:
             loss_match = re.search(loss_pattern, line)
             step_match = re.search(step_pattern, line)
             tensor_name_match = re.search(tensor_name_pattern, line)
-
 
             if loss_match:
                 loss_value = float(loss_match.group(1))  # Store the loss value
@@ -515,12 +543,11 @@ class AITKLogParser:
                 tensor_name = tensor_name_match.group(1)
 
             if tensor_name and loss_value and step:
-                # Append the extracted data as a dictionary
+                # Append the extracted data as a LossResult object
                 loras_found.append(LossResult(
-                    lora_name = tensor_name,
-                    loss = loss_value,
-                    step = step
-
+                    lora_name=tensor_name,
+                    loss=loss_value,
+                    step=step
                 ))
 
                 tensor_name = None
@@ -530,11 +557,8 @@ class AITKLogParser:
         # Sort the data by loss value in ascending order
         loras_found.sort(key=lambda x: x.loss)
 
-        if loras_found:
-            return loras_found
-        
-        return []
-    
+        return loras_found
+
     def get_lora_loss_by_name(self, lora_name:str):
         for item in self.data:
             if item.lora_name == lora_name:
@@ -7927,7 +7951,7 @@ class BKLoRAAITKTester:
         lora_full_path = folder_paths.get_full_path("loras", all_loras_in_folder[0])
         abs_lora_folder_path = os.path.dirname(lora_full_path)
         rel_lora_folder_path = os.path.dirname(all_loras_in_folder[0])
-        log_loc = os.path.join(abs_lora_folder_path, self.aitk_log_name)
+        log_loc = abs_lora_folder_path # This should cause the node to search for all log folders in the LoRA folder
         results_log = os.path.join(abs_lora_folder_path, self.result_log_name)
         tests_manager : TSVTestManager = TSVTestManager(TSVReader(results_log), 0.5)
    
@@ -8021,7 +8045,7 @@ class BKLoRAAITKTester:
         status += f"Total Loras Found [{len(all_loras_in_folder)}]\n"
         status += f"Last Processed: [{datetime.now().strftime('%I:%M:%S %p')}]\n\n"
         top_lora_test_results = tests_manager.get_top_results(num_of_loras)
-        status += self.print_table_to_txt_file(top_lora_test_results, aitk_log_parser)
+        status += self.print_table_to_txt_file(top_lora_test_results, aitk_log_parser, lora_name_padding)
         self.write_status_to_file(status, results_file_path)
 
         # this is a horrible shitty way to do this. Need to completely revamp this. This is temp.
@@ -8048,7 +8072,7 @@ class BKLoRAAITKTester:
 
         print(f"Table has been written to {filename}") 
 
-    def print_table_to_txt_file(self, top_results, aitk_parser : AITKLogParser, lora_name_padding) -> str:
+    def print_table_to_txt_file(self, top_results, aitk_parser : AITKLogParser, lora_name_padding : int) -> str:
         """
         Prints the formatted table to a txt file.
         
@@ -8056,18 +8080,24 @@ class BKLoRAAITKTester:
         :param filename: Name of the output txt file (default is "output.txt").
         """
         status = ""
+
+        # Increase lora_name_padding by 30
         lora_name_padding += 30
 
         # Add a header for clarity
-        status += f"{'Idx':<5} {'Lora Name':<loranamepadding} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
-        status += "-" * 45 + lora_name_padding + "\n"
+        status += f"{'Idx':<5} {'Lora Name':<{lora_name_padding}} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
+        status += "-" * (45 + lora_name_padding) + "\n"
 
         # Assuming test_result is an instance of LoRATestAvg
         for idx, test_result in enumerate(top_results):
+            # Get loss from aitk_parser based on lora_name
             loss = aitk_parser.get_lora_loss_by_name(test_result.lora_name).loss
-            status += f"{idx:<5} {test_result.lora_name:<loranamepadding} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
+            
+            # Add the formatted result to status string
+            status += f"{idx:<5} {test_result.lora_name:<{lora_name_padding}} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
 
-        return status   
+        # Return the formatted status
+        return status
 
    
     def replace_tag_in_prompt(self, tag_name, value, prompt,):
