@@ -70,19 +70,43 @@ namespace AI_Toolkit_log_parser
         }
 
         // Event handler for file drop
+        // Event handler for file/folder drop
         private void Window_Drop(object sender, System.Windows.DragEventArgs e)
         {
-            // Retrieve the dropped file path
-            string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
+            // Retrieve the dropped item paths
+            string[] droppedItems = (string[])e.Data.GetData(DataFormats.FileDrop);
 
-            if (files.Length > 0)
+            if (droppedItems.Length > 0)
             {
-                // Parse the log file that was dropped
-                ParseLog(files[0]);
+                // Reset the lists and DataGrid before loading the new log(s)
+                safetensors.Clear();
+                filteredSafetensors.Clear();
+                ResultsDataGrid.ItemsSource = null; // Clear the DataGrid
+
+                // Check if the dropped item is a directory (folder)
+                var firstItem = droppedItems[0];
+                if (Directory.Exists(firstItem))
+                {
+                    // If it's a folder, scan the folder and subfolders for "log.txt" files
+                    var logFiles = Directory.GetFiles(firstItem, "log.txt", SearchOption.AllDirectories);
+
+                    foreach (var logFile in logFiles)
+                    {
+                        // Parse each log file found in the folder and subfolders
+                        ParseLog(logFile);
+                    }
+                }
+                else
+                {
+                    // If it's a single file, just parse that one log file
+                    ParseLog(firstItem);
+                }
+
                 // Display the parsed data
                 DisplayResults();
             }
         }
+
 
         private void ParseLog(string logFilePath)
         {
