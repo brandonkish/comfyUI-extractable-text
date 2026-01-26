@@ -7548,6 +7548,7 @@ class SelectedLoras:
     def __init__(self):
         self.lora_items = []
 
+    # returns a list of loaded loras using text from LoraTextExtractor
     def updated_lora_items_with_text(self, text):
         available_loras = self.available_loras()
         self.update_current_lora_items_with_new_items(self.items_from_lora_text_with_available_loras(text, available_loras))
@@ -7630,7 +7631,7 @@ class LoraItemsParser:
         result = self.comment_trim_re.sub("", line.strip())
         result = self.prefix_trim_re.sub("", result.removesuffix(">"))
         return result if len(result) > 0 else None
-
+    
 
 class LoraItem:
     def __init__(self, lora_name, strength_model, strength_clip):
@@ -7639,6 +7640,18 @@ class LoraItem:
         self.strength_clip = strength_clip
         self._loaded_lora = None
     
+    def __eq__(self, other):
+        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip
+    
+    def get_lora_path(self):
+        return folder_paths.get_full_path("loras", self.lora_name)
+        
+    def move_resources_from(self, lora_items_by_name):
+        existing = lora_items_by_name.get(self.lora_name)
+        if existing is not None:
+            self._loaded_lora = existing._loaded_lora
+            existing._loaded_lora = None
+
     def apply_lora(self, model, clip):
         if self.is_noop:
             return (model, clip)
@@ -7660,8 +7673,6 @@ class LoraItem:
     def is_noop(self):
         return self.strength_model == 0 and self.strength_clip == 0
 
-    def get_lora_path(self):
-        return folder_paths.get_full_path("loras", self.lora_name)
 
 
 
@@ -8055,14 +8066,11 @@ class BKLoRAAITKTester:
                         for item in lora_items:
                             result = item.apply_lora(result[0], result[1])
 
-        positive = "PLACEHOLDER"
-        negative = "PLACEHOLDER"
-        lora_name = "PLACEHOLDER"
-        lora_trigger = "PLACEHOLDER"
+
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
         "MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status"
-        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__())
+        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
     def write_status_to_file(self, status, filename="status.txt"):
