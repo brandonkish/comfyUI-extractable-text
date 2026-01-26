@@ -7524,7 +7524,6 @@ class SelectedLoras:
     def __init__(self):
         self.lora_items = []
 
-    # returns a list of loaded loras using text from LoraTextExtractor
     def updated_lora_items_with_text(self, text):
         available_loras = self.available_loras()
         self.update_current_lora_items_with_new_items(self.items_from_lora_text_with_available_loras(text, available_loras))
@@ -7607,7 +7606,7 @@ class LoraItemsParser:
         result = self.comment_trim_re.sub("", line.strip())
         result = self.prefix_trim_re.sub("", result.removesuffix(">"))
         return result if len(result) > 0 else None
-    
+
 
 class LoraItem:
     def __init__(self, lora_name, strength_model, strength_clip):
@@ -7616,18 +7615,6 @@ class LoraItem:
         self.strength_clip = strength_clip
         self._loaded_lora = None
     
-    def __eq__(self, other):
-        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip
-    
-    def get_lora_path(self):
-        return folder_paths.get_full_path("loras", self.lora_name)
-        
-    def move_resources_from(self, lora_items_by_name):
-        existing = lora_items_by_name.get(self.lora_name)
-        if existing is not None:
-            self._loaded_lora = existing._loaded_lora
-            existing._loaded_lora = None
-
     def apply_lora(self, model, clip):
         if self.is_noop:
             return (model, clip)
@@ -7648,6 +7635,10 @@ class LoraItem:
     @property
     def is_noop(self):
         return self.strength_model == 0 and self.strength_clip == 0
+
+    def get_lora_path(self):
+        return folder_paths.get_full_path("loras", self.lora_name)
+
 
 
 ##################################################################################################################
@@ -7852,7 +7843,7 @@ class BKLoRAAITKTester:
         self.results_file = "testing_results.txt"
 
     @classmethod
-    def IS_CHANGED(self, model, clip, lora_folder, prompts_tsv_filepath, num_of_loras,aitk_log, tag_to_replace = None):
+    def IS_CHANGED(self, model, clip, lora_folder, lora_name_padding, prompts_tsv_filepath, num_of_loras,aitk_log, tag_to_replace = None):
         return float("nan")
 
     @classmethod
@@ -7903,7 +7894,7 @@ class BKLoRAAITKTester:
             path = os.path.join(self.output_dir, path)
         return path
 
-    def process(self, model, clip, lora_folder, aitk_log, prompts_tsv_filepath, num_of_loras, tag_to_replace = None):
+    def process(self, model, clip, lora_name_padding, lora_folder, aitk_log, prompts_tsv_filepath, num_of_loras, tag_to_replace = None):
         self.print_debug(f"\n\n\n\n")
         
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
