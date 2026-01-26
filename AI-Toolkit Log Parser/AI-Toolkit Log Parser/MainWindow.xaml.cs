@@ -16,7 +16,6 @@ namespace AI_Toolkit_log_parser
         public MainWindow()
         {
             InitializeComponent();
-            //this.Icon = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Images/ico/icon_256.ico"));
         }
 
         // Struct to hold the safetensor's name and loss value
@@ -37,6 +36,7 @@ namespace AI_Toolkit_log_parser
             }
         }
 
+        // Event handler for the Load Button click
         private void LoadButton_Click(object sender, RoutedEventArgs e)
         {
             // Open a file dialog to select the log file
@@ -50,6 +50,35 @@ namespace AI_Toolkit_log_parser
             {
                 // Parse the selected log file
                 ParseLog(openFileDialog.FileName);
+                // Display the parsed data
+                DisplayResults();
+            }
+        }
+
+        // Event handler for drag enter
+        private void Window_DragEnter(object sender, System.Windows.DragEventArgs e)
+        {
+            // Check if the data being dragged is a file
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = System.Windows.DragDropEffects.Copy;
+            }
+            else
+            {
+                e.Effects = System.Windows.DragDropEffects.None;
+            }
+        }
+
+        // Event handler for file drop
+        private void Window_Drop(object sender, System.Windows.DragEventArgs e)
+        {
+            // Retrieve the dropped file path
+            string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
+
+            if (files.Length > 0)
+            {
+                // Parse the log file that was dropped
+                ParseLog(files[0]);
                 // Display the parsed data
                 DisplayResults();
             }
