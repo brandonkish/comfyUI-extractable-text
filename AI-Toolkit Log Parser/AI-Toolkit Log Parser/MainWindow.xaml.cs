@@ -36,6 +36,33 @@ namespace AI_Toolkit_log_parser
             }
         }
 
+        private void DisplayResults()
+        {
+            // Set the filtered list initially to display all safetensors
+            filteredSafetensors = new List<SafetensorData>(safetensors);
+            ResultsDataGrid.ItemsSource = filteredSafetensors;
+
+            // Update the statistics
+            UpdateStatistics();
+        }
+
+        private void UpdateStatistics()
+        {
+            if (safetensors.Count > 0)
+            {
+                int count = safetensors.Count;
+                double maxLoss = safetensors.Max(s => s.Loss);
+                double minLoss = safetensors.Min(s => s.Loss);
+
+                StatsTextBlock.Text = $"Entries: {count} | Max Loss: {maxLoss:F6} | Min Loss: {minLoss:F6}";
+            }
+            else
+            {
+                StatsTextBlock.Text = "No data loaded.";
+            }
+        }
+
+
         // Event handler for the Load Button click
         private void LoadButton_Click(object sender, RoutedEventArgs e)
         {
@@ -142,12 +169,6 @@ namespace AI_Toolkit_log_parser
             safetensors = safetensors.OrderBy(s => s.Loss).ToList();
         }
 
-        private void DisplayResults()
-        {
-            // Set the filtered list initially to display all safetensors
-            filteredSafetensors = new List<SafetensorData>(safetensors);
-            ResultsDataGrid.ItemsSource = filteredSafetensors;
-        }
 
         // Event for TextBox to filter results as the user types
         private void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -175,6 +196,7 @@ namespace AI_Toolkit_log_parser
                 // Save the safetensor data to a text file
                 File.WriteAllLines(saveFileDialog.FileName, filteredSafetensors.Select(s => s.ToString()));
                 MessageBox.Show("List saved successfully!");
+            
             }
         }
     }

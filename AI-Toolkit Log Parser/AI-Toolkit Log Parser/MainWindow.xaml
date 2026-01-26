@@ -4,11 +4,11 @@
         Title="Safetensor Log Parser" Height="500" Width="800" AllowDrop="True"
         DragEnter="Window_DragEnter" Drop="Window_Drop">
     <Grid>
-        <!-- Button to Load Log File -->
-        <Button Name="LoadButton" Content="Load Log" HorizontalAlignment="Left" VerticalAlignment="Top" Width="100" Height="30" Margin="10,10,0,0" Click="LoadButton_Click"/>
+        <!-- Statistics TextBlock -->
+        <TextBlock Name="StatsTextBlock" HorizontalAlignment="Left" VerticalAlignment="Top" Width="760" Margin="10,10,10,0" />
 
         <!-- Search Box to filter the DataGrid -->
-        <TextBox Name="SearchBox" HorizontalAlignment="Left" VerticalAlignment="Top" Width="400" Margin="120,10,10,0" TextChanged="SearchBox_TextChanged" />
+        <TextBox Name="SearchBox" HorizontalAlignment="Left" VerticalAlignment="Top" Width="400" Margin="10,30,10,0" TextChanged="SearchBox_TextChanged" />
 
         <!-- DataGrid to Display the Safetensor Data -->
         <DataGrid Name="ResultsDataGrid" HorizontalAlignment="Left" VerticalAlignment="Top" Width="760" Height="350" Margin="10,50,10,0" AutoGenerateColumns="False" CanUserSortColumns="True">
