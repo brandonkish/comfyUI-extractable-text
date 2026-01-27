@@ -4712,7 +4712,7 @@ class BKSaveImage:
         self.file_path = ""
         self.invalid_filename_chars = r'[\/:*?"<>|]'
         self.invalid_path_chars = r'[*?"<>|]'
-        self.is_debug = False
+        self.is_debug = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4888,7 +4888,7 @@ class BKSaveImage:
                         for x in extra_pnginfo:
                             metadata.add_text(x, json.dumps(extra_pnginfo[x]))
 
-            img.save(filepath_w_ext, pnginfo=metadata, optimize=True)
+            img.save(filepath_w_ext,  format="PNG", pnginfo=metadata, optimize=True)
             img_count += 1
         return filepath_w_ext
     
@@ -7852,7 +7852,7 @@ class BKSimpleLoraLoader:
 
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
-        return(result[0], result[1], lora_full_path , lora_name, lora_trigger['tag'],)
+        return(result[0], result[1], lora_full_path , lora_name, lora_trigger,)
     
     def print_debug(self, string):
         if self.is_debug:
@@ -7867,7 +7867,7 @@ class BKSimpleLoraLoader:
 
 class BKLoRAAITKTester:
     def __init__(self):
-        self.is_debug = True
+        self.is_debug = False
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
@@ -7917,8 +7917,8 @@ class BKLoRAAITKTester:
             "aitk_log": ("STRING",),
          }}
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING", "STRING", "STRING", "LORA_TEST_INFO", "STRING",)  # This specifies that the output will be text
-    RETURN_NAMES = ("MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING","STRING",  "STRING", "STRING", "LORA_TEST_INFO", "STRING",)  # This specifies that the output will be text
+    RETURN_NAMES = ("MODEL", "CLIP", "positive", "negative", "prompt_name","lora_name", "lora_trigger", "test_info", "status")
     FUNCTION = "process"
     CATEGORY = "BKLoRATestingNode"  # A category for the node, adjust as needed
     LABEL = "BK LoRA Test (Advanced)"  # Default label text
@@ -7981,12 +7981,8 @@ class BKLoRAAITKTester:
             raise FileNotFoundError(f"Could not find AI-Toolkit [{self.aitk_log_name}] output log in the folder and/or user provided path. Can not continue.")
 
         aitk_log_parser = AITKLogParser(log_loc)
-        
-
         test_lora: LossResult = None
         test_prompt : Prompt = None
-
-
 
         all_prompts = prompt_parser.get_all_prompts()
         all_low_loss_loras = aitk_log_parser.get_lowest_loss_loras(num_of_loras, all_loras_in_folder)
@@ -8013,32 +8009,24 @@ class BKLoRAAITKTester:
         # TODO: Store the relative path to the lora, NOT just its name. Right now we have a workaround but
         #       It is garbage.
 
-
         self.print_debug(f"{test_lora}")
         self.print_debug(f"{test_prompt}")
-
 
         results_file_path = os.path.join(abs_lora_folder_path, self.results_file)
         if test_lora is None:
             raise EOFError(f"This is not an error. All LoRA tests have completed. The log is save in [{results_file_path}.]")
 
-
         test_info = LoraTestInfo(results_log, test_lora.lora_name, test_prompt.name, -1)
         test_lora_full_path = os.path.join(abs_lora_folder_path, test_lora.lora_name)
 
         self.print_debug(f"test_lora_full_path{test_lora_full_path}")
-        
         lora_trigger = STMetadataParser(STMetadataReader(test_lora_full_path)).get_most_frequent_tag()
-
         tag_manager = TSVTagManager(prompt_parser)
 
-                # Replace all tags in the prompt
+        # Replace all tags in the prompt
         for next_tag in tag_manager.get_all_tags():
                 rand_tag =  tag_manager.get_random_with_tag_name(next_tag)
-                
-
-                self.print_debug(f"rand_tag [{rand_tag}]")
-
+                print(f"rand_tag [{rand_tag}]")
 
                 test_prompt.pos = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.pos, test_prompt.pos)
                 test_prompt.neg = self.replace_tag_in_prompt(rand_tag.tag_name, rand_tag.neg, test_prompt.neg)
@@ -8047,8 +8035,6 @@ class BKLoRAAITKTester:
         if tag_to_replace:        
             test_prompt.pos = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.pos)
             test_prompt.neg = self.replace_tag_in_prompt(tag_to_replace, lora_trigger, test_prompt.neg)
-        
-        
 
         status = f"Processing Lora: {test_lora.lora_name}\n"
         status += f"Prompt Name: {test_prompt.name}\n"
@@ -8069,8 +8055,8 @@ class BKLoRAAITKTester:
 
         print_debug_bar(self.is_debug)
         self.print_debug(f"\n\n\n\n")
-        "MODEL", "CLIP", "positive", "negative", "lora_name", "lora_trigger", "test_info", "status"
-        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_lora.lora_name,  lora_trigger, test_info.__repr__(), status)
+        returned_lora_name = os.path.splitext(test_lora.lora_name)[0]
+        return(result[0], result[1], test_prompt.pos, test_prompt.neg, test_prompt.name, returned_lora_name,  lora_trigger, test_info.__repr__(), status)
         #return(result[0], result[1], results_folder, lora_path, prompt_name, positive, negative, filename, lora_name, lora_trigger, test_info)
 
     def write_status_to_file(self, status, filename="status.txt"):
@@ -8092,16 +8078,26 @@ class BKLoRAAITKTester:
         # Increase lora_name_padding by 30
         lora_name_padding += 30
 
+        # Find the Lora Name with the smallest STD, AVG, Rating, and Loss
+        #min_std_result = min(top_results, key=lambda x: x.std)
+        #min_avg_result = min(top_results, key=lambda x: x.avg)
+        #min_rating_result = min(top_results, key=lambda x: x.rating)
+        #min_loss_result = min(top_results, key=lambda x: aitk_parser.get_lora_loss_by_name(x.lora_name).loss)
+
+        # Add the Lora Names with smallest metrics at the top
+        #status += f"Smallest STD: {min_std_result.lora_name} (STD: {min_std_result.std:<10.4f})\n"
+        #status += f"Smallest AVG: {min_avg_result.lora_name} (AVG: {min_avg_result.avg:<10.4f})\n"
+        #status += f"Smallest Rating: {min_rating_result.lora_name} (Rating: {min_rating_result.rating:<10.4f})\n"
+        #status += f"Loss: {min_loss_result.lora_name} (Loss: {aitk_parser.get_lora_loss_by_name(min_loss_result.lora_name).loss:<10.4f})\n"
+        status += "\n"  # Add a line break before the table starts
+
         # Add a header for clarity
         status += f"{'Idx':<5} {'Lora Name':<{lora_name_padding}} {'Std':<10} {'Avg':<10} {'Rating':<10} {'Loss':<10}\n"
         status += "-" * (45 + lora_name_padding) + "\n"
 
-        # Assuming test_result is an instance of LoRATestAvg
+        # Add the table rows
         for idx, test_result in enumerate(top_results):
-            # Get loss from aitk_parser based on lora_name
             loss = aitk_parser.get_lora_loss_by_name(test_result.lora_name).loss
-            
-            # Add the formatted result to status string
             status += f"{idx:<5} {test_result.lora_name:<{lora_name_padding}} {test_result.std:<10.4f} {test_result.avg:<10.4f} {test_result.rating:<10.4f} {loss:<10.4f}\n"
 
         # Return the formatted status
