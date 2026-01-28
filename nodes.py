@@ -5012,7 +5012,7 @@ class BKSaveCaptionImage:
 
 
 #################################################################################################################
-# BK SAVE PATH FORMATTER
+# BK PATH FORMATTER
 ##################################################################################################################
 #TODO: Needs overhaul
 class BKPathFormatter:
@@ -5029,7 +5029,7 @@ class BKPathFormatter:
                 "filename": ("STRING", {"default": f'image', "multiline": False}),
             },
             "optional": {
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,"forceInput": True,}),
                 "suffix": ("STRING", {"default": f'', "multiline": False}),
                 "subfolder": ("STRING", ),
                 "extension": ("STRING", ),
@@ -5051,8 +5051,10 @@ class BKPathFormatter:
         return float("nan")
 
     
-    def process(self,  filename:str, folder_path:str = None, subfolder:str = None, seed:int = None, suffix:str = None, extension:str = None):
+    def process(self,   filename:str, folder_path:str = None, subfolder:str = None, seed:int = None, suffix:str = None, extension:str = None):
         print_debug_header(self.is_debug, "BK SAVE PATH FORMATTER")
+
+
 
         if not os.path.isabs(folder_path):
             folder_path = os.path.join(self.output_dir.strip(), folder_path.strip())
@@ -7820,7 +7822,7 @@ class BKSimpleLoraLoader:
 
 
     @classmethod
-    def IS_CHANGED(self, clip, model, lora):
+    def IS_CHANGED(self, enable, clip, model, lora):
         return float("nan")
     
     @classmethod
@@ -7830,6 +7832,7 @@ class BKSimpleLoraLoader:
             "model": ("MODEL",),
             "clip": ("CLIP", ),
             "lora": (lora_paths,),
+            "enable": ("BOOLEAN", {"default": True}),
          },
          "optional": {
          }}
@@ -7846,8 +7849,11 @@ class BKSimpleLoraLoader:
             path = os.path.join(self.output_dir, path)
         return path
 
-    def process(self, clip, model, lora):
+    def process(self,enable, clip, model, lora):
         self.print_debug(f"\n\n\n\n")
+
+        if not enable:
+            return(model, clip, "NONE" , "NONE", "NONE",)
         
         print_debug_header(self.is_debug, "BK LORA TESTING NODE")
         result = (model, clip,"","")
