@@ -145,24 +145,32 @@ namespace AI_Toolkit_log_parser
 
             var lines = File.ReadAllLines(logFilePath);
             SafetensorData currentData = default(SafetensorData);
+            var isSaftensorsMatchFound = false;
 
             foreach (var line in lines)
             {
-                // Check for the loss value in the line
-                var lossMatch = Regex.Match(line, lossPattern);
-                if (lossMatch.Success)
-                {
-                    double lossValue = double.Parse(lossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-                    currentData.Loss = lossValue; // Update loss value
-                }
-
-                // Check for safetensor save entries
                 var safetensorMatch = Regex.Match(line, safetensorPattern);
                 if (safetensorMatch.Success)
                 {
+                    isSaftensorsMatchFound = true;
                     string safetensorName = safetensorMatch.Groups[1].Value;
-                    safetensors.Add(new SafetensorData(safetensorName, currentData.Loss));
+                    currentData.Name = safetensorName;
+
+
                 }
+
+                // Check for the loss value in the line
+                var lossMatch = Regex.Match(line, lossPattern);
+                if (lossMatch.Success && isSaftensorsMatchFound)
+                {
+                    double lossValue = double.Parse(lossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                    currentData.Loss = lossValue; // Update loss value
+                    safetensors.Add(new SafetensorData(currentData.Name, currentData.Loss));
+                    isSaftensorsMatchFound = false;
+                }
+
+                // Check for safetensor save entries
+
             }
 
             // Sort the safetensor list by the loss value (ascending)

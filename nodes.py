@@ -104,7 +104,7 @@ class TSVReader:
     def __init__(self, tsv_filepath: str):
         self.filepath = tsv_filepath
         self.dataframe= None
-        self.is_debug = True
+        self.is_debug = False
 
     def print_debug(self, string):
         if self.is_debug:
@@ -196,7 +196,7 @@ class TSVTestManager:
             raise ValueError(f"Min similartiy weighting is 0.0, provided weighting [{similartiy_weight}]")
         
         self.tsv_reader = tsv_reader
-        self.is_debug = True
+        self.is_debug = False
         self.similarity_weight = similartiy_weight
         self.all_tests = None
         self.all_avgs = None
@@ -478,6 +478,7 @@ class AITKLogParser:
         the specific file, if a folder is provided it will search for all files ending with "log.txt"
         and return a combined list with all losses found in all logs."""
     def __init__(self, path: str):
+        self.is_debug = False
         self.path = path
         # Determine if the path is a file or a folder and process accordingly
         if os.path.isdir(self.path):
@@ -525,20 +526,23 @@ class AITKLogParser:
         loss_value = None
         step = None
         tensor_name = None
+        is_checkpoint_found = False
         for line in lines:
             # Look for lines that contain the loss value and step number
             loss_match = re.search(loss_pattern, line)
             step_match = re.search(step_pattern, line)
             tensor_name_match = re.search(tensor_name_pattern, line)
 
-            if loss_match:
-                loss_value = float(loss_match.group(1))  # Store the loss value
 
-            if step_match and loss_value is not None:
-                # When a checkpoint step is found, also grab the safetensor's name
+
+            if step_match is not None:
+                is_checkpoint_found = True
                 step = int(step_match.group(1))  # Extract the step number
 
-            if tensor_name_match and loss_value is not None and step is not None:
+            if loss_match is not None and is_checkpoint_found:
+                loss_value = float(loss_match.group(1))  # Store the loss value
+
+            if tensor_name_match and is_checkpoint_found:
                 # Extract the safetensor name (no path, just the filename)
                 tensor_name = tensor_name_match.group(1)
 
@@ -549,15 +553,20 @@ class AITKLogParser:
                     loss=loss_value,
                     step=step
                 ))
-
+                self.print_debug(f"Found LoRA [{tensor_name}] at step [{step}] with loss [{loss_value}] in log [{filepath}]")
                 tensor_name = None
                 step = None
                 loss_value = None  # Reset the loss value after saving checkpoint info
+                is_checkpoint_found = False
 
         # Sort the data by loss value in ascending order
         loras_found.sort(key=lambda x: x.loss)
 
         return loras_found
+    
+    def print_debug(self, string):
+        if self.is_debug:
+            print (f"{string}")
 
     def get_lora_loss_by_name(self, lora_name:str):
         for item in self.data:
@@ -2021,7 +2030,7 @@ class BKTSVRandomPrompt:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self.name = ""
-        self.is_debug = True
+        self.is_debug = False
         self.name_column_suffix = "_name"
         self.negative_column_suffix = "_negative"
 
@@ -4758,38 +4767,46 @@ class BKSaveImage:
         print_debug_header(self.is_debug, "BK SAVE IMAGE NODE")
         
         
-        if filename is None:
+        if not filename:
             raise ValueError(f"Please enter a name to save the file as.")
-        self.print_debug(f"filename: {filename}")
 
         if strip_invalid_chars:
             filename = re.sub(self.invalid_filename_chars, '', filename)
-            if not name_suffix is None:
-                name_suffix = re.sub(self.invalid_filename_chars, '', name_suffix)
             folder_path = re.sub(self.invalid_path_chars, '', folder_path)
-            subfolder = re.sub(self.invalid_path_chars, '', subfolder)
+            if subfolder:
+                subfolder = re.sub(self.invalid_path_chars, '', subfolder)
+            if name_suffix:
+                name_suffix = re.sub(self.invalid_filename_chars, '', name_suffix)
 
-        self.print_debug(f"filename: {filename}")
         # Check if the provided path is absolute or relative
         if not os.path.isabs(folder_path):
             folder_path = f"{self.output_dir.strip()}\\{folder_path}"
 
-        if not subfolder is None:
+        if subfolder:
             folder_path = os.path.join(folder_path, subfolder)
 
-        # only add seed to name if option is toggled
-
-        self.print_debug(f"add_seed_to_name: {add_seed_to_name}")
+       
+        
         if add_seed_to_name:
-            self.print_debug(f"seed_optional: {seed_optional}")
+            self.print_debug(f"add_seed_to_name: {add_seed_to_name}")
+            
             if seed_optional:
                 filename = f"{filename}_{seed_optional}"
             else:
-                filename = f"{filename}_NA"
-        self.print_debug(f"filename: {filename}")
+                filename = f"{filename}_NONE"
+
+            self.print_debug(f"Name with seed: {filename}")
+
+        if name_suffix:
+            self.print_debug(f"Add Suffix to name: [{name_suffix}]")
+            filename = f"{filename}_{name_suffix}"
+            self.print_debug(f"Name w suffix [{filename}]")
+
+        self.print_debug(f"Final filename: {filename}")
 
         # Define the full file path with the correct file separator for the OS
         filepath = os.path.join(folder_path.strip(), f"{filename.strip()}")
+
 
         if is_save_image:
             # Ensure the output directory exists
@@ -4806,7 +4823,7 @@ class BKSaveImage:
             elif len(images) == 1:
                 print(f'Image saved to: {savedpath}')
             else:
-                print(f'Images saved to: {filepath}_###_{name_suffix}.png')
+                print(f'Images saved to: {filepath}_###.png')
         
             print_debug_bar(self.is_debug)
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
@@ -4815,19 +4832,15 @@ class BKSaveImage:
             return images, folder_path.strip(), f"{filename.strip()}", f"{filepath}.png"
 
 
-    def save_images(self, images, filepath, extra_pnginfo, include_workflow, suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, mask_optional=None) -> list[str]:
+    def save_images(self, images, filepath_wo_ext, extra_pnginfo, include_workflow, name_suffix=None, positive_optional=None, negative_optional=None, seed_optional=None, other_optional=None, mask_optional=None) -> list[str]:
         
         # Having img_count outside the loop allows us to pickup where we left off for the next image
         img_count = 1
 
-        if filepath is not None:
-            if suffix is None:
-                suffix = suffix.strip()
-                if suffix != "":
-                    filepath = f"{filepath}_{suffix}"
-            
+        if not filepath_wo_ext:
+            raise ValueError(f"Filepath is empty!")
 
-        self.print_debug(f"filepath: {filepath}")
+        self.print_debug(f"filepath_wo_ext: {filepath_wo_ext}")
 
         for image in images:
             i = 255. * image.cpu().numpy()
@@ -4850,32 +4863,30 @@ class BKSaveImage:
 
                 img = Image.fromarray(img_array)
 
-            # Create file path with extension
-            filepath_w_ext = filepath + ".png"
-            numbered_filepath_w_ext = filepath_w_ext
             
             # If the file already exists, add a number to the name
-            if os.path.exists(filepath_w_ext):
+            if os.path.exists(f"{filepath_wo_ext}.png"):
+                numbered_path_wo_ext = filepath_wo_ext
                 # Keep increasing the filename's number until we get one that does not exist
-                while os.path.exists(numbered_filepath_w_ext):
+                while os.path.exists(f"{numbered_path_wo_ext}.png"):
                     # Generate new filename with incremented img_count
                     
-                    numbered_filepath = f"{filepath}_{img_count:06d}"
-                    numbered_filepath_w_ext = f"{numbered_filepath}.png"
-                    self.print_debug(f"numbered_filepath: {numbered_filepath}")
-                    self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
+                    numbered_path_wo_ext = f"{filepath_wo_ext}_{img_count:06d}"
+                    self.print_debug(f"numbered_path_wo_ext: [{numbered_path_wo_ext}]")
                     img_count += 1  # Increment the image count
+                
+                filepath_wo_ext = numbered_path_wo_ext
+                self.print_debug(f"Added number to filename filepath_wo_ext: [{filepath_wo_ext}]")
 
             # Final filepath (with number if necessary)
-            filepath_w_ext = numbered_filepath_w_ext
-            self.print_debug(f"numbered_filepath_w_ext: {numbered_filepath_w_ext}")
+            self.print_debug(f"final numbered_path_wo_ext: [{filepath_wo_ext}]")
 
             metadata = PngInfo()
             if positive_optional is not None:
-                metadata.add_text("positive", positive_optional)
+                metadata.add_text("positive", str(positive_optional))
 
             if negative_optional is not None:
-                metadata.add_text("negative", negative_optional)
+                metadata.add_text("negative", str(negative_optional))
 
             if seed_optional is not None:
                 metadata.add_text("seed", str(seed_optional))
@@ -4888,9 +4899,9 @@ class BKSaveImage:
                         for x in extra_pnginfo:
                             metadata.add_text(x, json.dumps(extra_pnginfo[x]))
 
-            img.save(filepath_w_ext,  format="PNG", pnginfo=metadata, optimize=True)
+            img.save(f"{filepath_wo_ext}.png",  format="PNG", pnginfo=metadata, optimize=True)
             img_count += 1
-        return filepath_w_ext
+        return f"{filepath_wo_ext}.png"
     
     def print_debug(self, string):
         if self.is_debug:
@@ -4904,7 +4915,7 @@ class BKSaveImage:
 class BKSaveCaptionImage:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
-        self.is_debug = True
+        self.is_debug = False
         self.caption_image_ext = ".capimg"
 
     @classmethod
@@ -5040,7 +5051,7 @@ class BKPathFormatter:
         return float("nan")
 
     
-    def process(self,  filename, folder_path = None, subfolder = None, seed = None, suffix = None, extension = None):
+    def process(self,  filename:str, folder_path:str = None, subfolder:str = None, seed:int = None, suffix:str = None, extension:str = None):
         print_debug_header(self.is_debug, "BK SAVE PATH FORMATTER")
 
         if not os.path.isabs(folder_path):
@@ -7062,7 +7073,7 @@ class BKLoadImage:
 
 class BKLoRATest:
     def __init__(self):
-        self.is_debug = True
+        self.is_debug = False
         self.selected_loras = SelectedLoras()
         self.invalid_filename_chars = r'[<>:"/\\|?*\x00-\x1F]'
         self.output_dir = folder_paths.output_directory
@@ -7803,7 +7814,7 @@ class BKLoraAutoSwitcher:
 
 class BKSimpleLoraLoader:
     def __init__(self):
-        self.is_debug = False
+        self.is_debug = True
         self.selected_loras = SelectedLoras()
         self.output_dir = folder_paths.output_directory
 
@@ -7842,7 +7853,11 @@ class BKSimpleLoraLoader:
         result = (model, clip,"","")
 
         lora_full_path = folder_paths.get_full_path("loras", lora)
-        lora_name = os.path.split(os.path.basename(lora_full_path))
+        self.print_debug(f"lora_full_path:[{lora_full_path}]")
+        base_name = os.path.basename(fr"{lora_full_path}")
+        self.print_debug(f"base_name:[{base_name}]")
+        lora_name = Path(base_name).stem
+        self.print_debug(f"lora_name:[{lora_name}]")
         lora_trigger = STMetadataParser(STMetadataReader(lora_full_path)).get_most_frequent_tag()
         lora_items = self.selected_loras.updated_lora_items_with_text(lora)
 
@@ -8228,7 +8243,7 @@ class TSVPromptParser:
     def __init__(self, tsv_reader: TSVReader):
         self.dataframe = tsv_reader.to_dataframe()
         self.headers = []
-        self.is_debug = True
+        self.is_debug = False
 
     def print_debug(self, string):
         if self.is_debug:
