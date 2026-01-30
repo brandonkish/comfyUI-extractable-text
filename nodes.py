@@ -3121,21 +3121,46 @@ class BKNextUnprocessedImageInFolder:
             "required": {
                 "folder": ("STRING", {"default": "","tooltip": "The node will scan the source path folder for any of the specified files, it will then return the next file that is in the source path, but not in the destination path. ex. If the source path has a file called 'image.png', and the destination folder does not, it will output the info for the 'image.png' file found in the source folder. It will keep doing this until all files in the source folder are found in the destination folder. Can use absolute or relative path, if relative, starts in output folder."}),
                 "auto_reset": ("BOOLEAN",),
+                "mode": (["Folder Root Only","All Subfolders"], {"default": "","tooltip": "If all files have been processed, and auto_reset is enabled, this mode will determine how to reset the process. 'Delete Log' will delete the log file that tracks processed files. 'Clear Log Contents' will clear the contents of the log file without deleting it."}),
             }
         }
     
-    RETURN_TYPES = ("STRING","STRING","STRING","STRING","INT","STRING","STRING","STRING")  # This specifies that the output will be text
-    RETURN_NAMES = ("filename","folder_path", "extension", "full_path", "remaining_files","file_list", "file_list_w_idx", "status")
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING","INT","STRING","STRING")  # This specifies that the output will be text
+    RETURN_NAMES = ("filename","folder_path", "extension", "full_path", "remaining_files","relative_path", "status")
     FUNCTION = "process"  # The function name for processing the inputs
     CATEGORY = "BKNodes"  # A category for the node, adjust as needed
     LABEL = "BK Next Unprocessed Image In Folder"  # Default label text
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(self, folder, auto_reset):
+    def IS_CHANGED(self, mode, folder, auto_reset):
         return float("nan")
+    
+    def get_all_matching_image_files(self, folder, image_extensions, mode):
+        matching_files = []
+        # Search for image files with supported extensions
 
-    def process(self, folder, auto_reset):
+        if mode == "Folder Root Only":
+            for ext in image_extensions:
+                search_pattern = os.path.join(folder, "*")  # This will match all files in the folder
+                matching_files.extend(glob.glob(search_pattern + ext))
+        elif mode == "All Subfolders":
+            for ext in image_extensions:
+                search_pattern = os.path.join(folder, "**", "*")  # This will match all files in the folder and subfolders
+                matching_files.extend(glob.glob(search_pattern + ext, recursive=True))
+
+        # If no images are found, raise an error
+        if not matching_files:
+            raise ValueError(f"No image files found in `{folder.strip()}` folder.")
+
+        # Sort the files alphabetically
+        matching_files.sort()
+
+        return matching_files
+
+    def process(self, mode, folder, auto_reset):
+
+        folder = folder.strip().strip("\"").strip("\'").strip("\\").strip("/").strip()
 
         # Check if the provided path is absolute or relative
         if not os.path.isabs(folder):
@@ -3149,19 +3174,8 @@ class BKNextUnprocessedImageInFolder:
         image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp']
         
         # Construct the full search pattern (adding folder_path) for image extensions
-        search_pattern = os.path.join(folder, "*")  # This will match all files in the folder
-        matching_files = []
 
-        # Search for image files with supported extensions
-        for ext in image_extensions:
-            matching_files.extend(glob.glob(search_pattern + ext))
 
-        # If no images are found, raise an error
-        if not matching_files:
-            raise ValueError(f"No image files found in `{folder.strip()}` folder.")
-
-        # Sort the files alphabetically
-        matching_files.sort()
 
         log_name = "ImgProcessLog.txt"
 
@@ -3172,20 +3186,26 @@ class BKNextUnprocessedImageInFolder:
         # If "reviewed.txt" exists read it
         reviewed_files = set()
         if os.path.exists(reviewed_file):
-            with open(reviewed_file, 'r') as file:
-                for line in file:
+            with open(reviewed_file, 'r') as image_path:
+                for line in image_path:
                     line = line.strip()  # Remove leading/trailing whitespace
                     if line:  # Ignore empty lines
                         reviewed_files.add(line.lower())  # Store filenames in lowercase
 
         # Remove files from "matching_files" that are in "reviewed_files" (ignoring file extensions)
-        matching_files = [
-            file for file in matching_files
-            if os.path.splitext(os.path.basename(file))[0].lower() not in reviewed_files
-        ]
+        images_in_folder = self.get_all_matching_image_files(folder, image_extensions, mode)
+        
+        images_not_processed = []
+        
+        for image_path in images_in_folder:
+            rel_folder_path = self.remove_root_path(image_path, folder)
+            if rel_folder_path.lower() not in reviewed_files:
+                images_not_processed.append(image_path)
+
+        
 
         # If no files left to process
-        if not matching_files:
+        if not images_not_processed:
             # And the user has selected auto_reset
             if auto_reset:
                 print(f"All files processed, attempting to auto reset.")
@@ -3194,12 +3214,7 @@ class BKNextUnprocessedImageInFolder:
                     os.remove(reviewed_file)
                     print(f"File '{reviewed_file}' has been deleted successfully.")
 
-                    # Search for image files with supported extensions
-                    for ext in image_extensions:
-                        matching_files.extend(glob.glob(search_pattern + ext))
-
-                    # Sort the files alphabetically
-                    matching_files.sort()
+                    images_not_processed = self.get_all_matching_image_files(folder, image_extensions, mode)
                 except Exception as e:
                     
                     # If an error occurs, print the error message
@@ -3210,22 +3225,19 @@ class BKNextUnprocessedImageInFolder:
                 raise ValueError(f"No files to process after removing reviewed files. If you want to reset review previously reviewed notes, simply delete or edit the '{reviewed_file}' file in the destination folder.")
 
         # Get the total number of files still left in the list after existing, and reviewed files have been removed.
-        total_files_found = len(matching_files)
+        total_files_found = len(images_not_processed)
 
         # Extract the file at the specified index
-        full_path = matching_files[0]
-        filename_with_extension = os.path.basename(full_path)
+        full_filepath = images_not_processed[0]
+        full_folder_path = os.path.dirname(full_filepath)
+        rel_file_path = self.remove_root_path(full_filepath, folder)
+        rel_folder_path = self.remove_root_path(full_folder_path, folder)
+        filename_with_extension = os.path.basename(full_filepath)
         filename, extension = os.path.splitext(filename_with_extension)
 
         # Append the "filename" to "reviewed.txt" while locking the file during write
-        with open(reviewed_file, 'a') as file:
-            file.write(f"{filename}\n")
-
-        # Create the list of files as a string (one filename per line, without extension)
-        file_list = "\n".join([os.path.splitext(os.path.basename(file))[0] for file in matching_files])
-
-        # Create the list of files with index as a string (index:filename without extension)
-        file_list_w_idx = "\n".join([f"{i}:{os.path.splitext(os.path.basename(file))[0]}" for i, file in enumerate(matching_files)])
+        with open(reviewed_file, 'a') as image_path:
+            image_path.write(f"{rel_file_path}\n")
 
         remaining_files = total_files_found - 1
 
@@ -3233,8 +3245,21 @@ class BKNextUnprocessedImageInFolder:
         status = f"Processing [{filename}] {remaining_files} remaining. [{current_time}]"
 
         # Return the requested information
-        return (filename, folder, extension, full_path, remaining_files, file_list, file_list_w_idx, status)
+        return (filename, full_folder_path, extension, full_filepath, remaining_files, rel_folder_path, status)
 
+
+    def remove_root_path(self, file_path, root_path):
+        # Ensure both paths are normalized (no trailing slashes, etc.)
+        file_path = os.path.normpath(file_path)
+        root_path = os.path.normpath(root_path)
+
+        # Check if the root_path is a prefix of file_path
+        if file_path.startswith(root_path):
+            # Remove the root_path from the file_path
+            relative_path = os.path.relpath(file_path, root_path)
+            return relative_path
+        else:
+            raise ValueError("The file path does not start with the given root path.")
 
 ##################################################################################################################
 # BK Get Next Caption File
@@ -8501,85 +8526,85 @@ class TSVTagManager:
 
 # Register the node in ComfyUI's NODE_CLASS_MAPPINGS
 NODE_CLASS_MAPPINGS = {
-    "Ollama Connectivity Data": JSONExtractor,
-    # "Single LoRA Test Node": SingleLoRATestNode,
-    # "Multi LoRA Test Node": MultiLoRATestNode,
-    "Get Larger Value": BKGetLargerValue,
-    "Convert To UTF8": ToUTF8,
-    "BK Path Builder": BKPathBuilder,
-    "BK Max Size": BKMaxSize,
-    "BK Loop Path Builder": BKLoopPathBuilder,
-    "BK Loop Status Text": BKLoopStatusText,
-    "BK Add To Path": BKAddToPath,
-    "BK Save Image": BKSaveImage,
+    "BK Add Mask Box": BKAddMaskBox,
     "BK Add To JSON": BKAddToJSON,
-    "BK Get From JSON": BKReadFromJSON,
-    "BK Save Text File": BKSaveTextFile,
-    "BK Load Image": BKLoadImage,
-    "BK Prompt Sync": BKPromptSync,
-    "BK Load Image By Path": BKLoadImageByPath,
-    "BK String Splitter": BKStringSplitter,
-    "BK Print To Console": BKPrintToConsole,
-    "BK Replace All Tags": BKReplaceAllTags,
-    "BK Line Counter": BKLineCounter,
-    "BK Dynamic Checkpoints": BKDynamicCheckpoints,
-    "BK Remove Last Folder": BKRemoveLastFolder,
-    "BK Replace Each Tag Random": BKReplaceEachTagRandom,
-    "BK Read Text File": BKReadTextFile,
-    "BK Multi Read Text File": BKMultiReadTextFile,
-    "BK Write Text File": BKWriteTextFile,
-    "BK Combo Tag": BKComboTag,
-    "BK Dynamic Checkpoints List": BKDynamicCheckpointsList,
-    "BK Sampler Options Selector": BKSamplerOptionsSelector,
-    "BK TSV Loader": BKTSVFileLoader,
-    "BK TSV String Parser": BKTSVStringParser,
-    "BK Print To Console With Boarder": BKPrintToConsoleWithBorder,
+    "BK Add To Path": BKAddToPath,
+    "BK AI Text Cleaner": BKAITextCleaner,
+    "BK AI Text Parser": BKAITextParser,
+    "BK Body Ratios": BKBodyRatios,
+    "BK Bool Not": BKBoolNot,
+    "BK Bool Operation": BKBoolOperation,
     "BK Caption File Reader": BKCaptionFileParser,
     "BK Caption FileParser": BKCaptionFileScanner,
-    "BK TSV Tag Replacer": BKTSVTagReplacer,
-    "BK AI Text Parser": BKAITextParser,
-    "BK TSV Header Formatter": BKTSVHeaderFormatter,
-    "BK File Selector": BKFileSelector,
-    "BK Get Next Img Without Caption": BKGetNextImgWOCaption,
-    "BK Remove Any Sentences With Text": BKRemoveAnySentencesWithText,
+    "BK Combo Tag": BKComboTag,
+    "BK Create Mask For Image": BKCreateMaskForImage,
+    "BK Crop And Pad": BKCropAndPad,
+    "BK Dynamic Checkpoints List": BKDynamicCheckpointsList,
+    "BK Dynamic Checkpoints": BKDynamicCheckpoints,
     "BK File Select Next Missing": BKFileSelectNextMissing,
-    "BK Remove Mask At Idx": BKRemoveMaskAtIdx,
-    "BK Remove Mask At Idx SAM3": BKRemoveMaskAtIdxSAM3,
-    "BK TSV Prompt Reader": BKTSVPromptReader,
+    "BK File Select Next Unprocessed": BKFileSelectNextUnprocessed,
+    "BK File Selector": BKFileSelector,
+    "BK Get From JSON": BKReadFromJSON,
+    "BK Get Last Folder Name": BKGetLastFolderName,
+    "BK Get Matching Mask": BKGetMatchingMask,
+    "BK Get Next Caption File": BKGetNextCaptionFile,
+    "BK Get Next Img Without Caption": BKGetNextImgWOCaption,
+    "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
     "BK Get Next Missing Checkpoint": BKGetNextMissingCheckpoint,
-    "BK Is Vertical Image": BKIsVerticalImage,
+    "BK Image Size Test": BKImageSizeTest,
+    "BK Image Sync": BKImageSync,
     "BK Is A Greater Than B INT": BKIsAGreaterThanBINT,
     "BK Is A Greater Than Or Equal To B INT": BKIsAGreaterThanOrEqualToBINT,
     "BK Is A Less Than B INT": BKIsALessThanBINT,
     "BK Is A Less Than Or Equal To B INT": BKIsALessThanOrEqualToBINT,
-    "BK File Select Next Unprocessed": BKFileSelectNextUnprocessed,
-    "BK Move Or Copy File": BKMoveOrCopyFile,
-    "BK Get Matching Mask": BKGetMatchingMask,
-    "BK Get Last Folder Name": BKGetLastFolderName,
-    "BK Next Unprocessed File In Folder": BKNextUnprocessedFileInFolder,
-    "BK Next Unprocessed Image In Folder": BKNextUnprocessedImageInFolder,
-    "BK AI Text Cleaner": BKAITextCleaner,
-    "BK TSV Random Prompt": BKTSVRandomPrompt,
-    "BK Crop And Pad": BKCropAndPad,
-    "BK Body Ratios": BKBodyRatios,
+    "BK Is Vertical Image": BKIsVerticalImage,
+    "BK Line Counter": BKLineCounter,
+    "BK Load Image By Path": BKLoadImageByPath,
+    "BK Load Image": BKLoadImage,
+    "BK Loop Path Builder": BKLoopPathBuilder,
+    "BK Loop Status Text": BKLoopStatusText,
+    "BK LoRA AITK Tester": BKLoRAAITKTester,
+    "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
+    "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
+    "BK LoRA Test": BKLoRATest,
     "BK Mask Square And Pad": BKMaskSquareAndPad,
     "BK Mask Test": BKMaskTest,
-    "BK Bool Not": BKBoolNot,
-    "BK Add Mask Box": BKAddMaskBox,
-    "BK Create Mask For Image": BKCreateMaskForImage,
-    "BK Bool Operation": BKBoolOperation,
-    "BK Image Size Test": BKImageSizeTest,
-    "BK Get Next Caption File": BKGetNextCaptionFile,
-    "BK Image Sync": BKImageSync,
-    "BK LoRA Test": BKLoRATest,
-    "BK LoRA AITK Tester": BKLoRAAITKTester,
-    "BK LoRA Test Save (Advanced)": BKLoraTestSaveAdvanced,
-    "BK LoRA Auto Switcher": BKLoraAutoSwitcher,
-    "BK Save Caption Image": BKPathFormatter,
-    "BK Get Next Missing Caption Image": BKGetNextMissingCaptionImage,
+    "BK Max Size": BKMaxSize,
+    "BK Move Or Copy File": BKMoveOrCopyFile,
+    "BK Multi Read Text File": BKMultiReadTextFile,
+    "BK Next Unprocessed File In Folder": BKNextUnprocessedFileInFolder,
+    "BK Next Unprocessed Image In Folder": BKNextUnprocessedImageInFolder,
+    "BK Path Builder": BKPathBuilder,
     "BK Path Formatter": BKPathFormatter,
+    "BK Print To Console With Boarder": BKPrintToConsoleWithBorder,
+    "BK Print To Console": BKPrintToConsole,
+    "BK Prompt Sync": BKPromptSync,
+    "BK Read Text File": BKReadTextFile,
+    "BK Remove Any Sentences With Text": BKRemoveAnySentencesWithText,
+    "BK Remove Last Folder": BKRemoveLastFolder,
+    "BK Remove Mask At Idx SAM3": BKRemoveMaskAtIdxSAM3,
+    "BK Remove Mask At Idx": BKRemoveMaskAtIdx,
+    "BK Replace All Tags": BKReplaceAllTags,
+    "BK Replace Each Tag Random": BKReplaceEachTagRandom,
+    "BK Sampler Options Selector": BKSamplerOptionsSelector,
     "BK Save As Icon": BKSaveAsIcon,
+    "BK Save Caption Image": BKPathFormatter,
+    "BK Save Image": BKSaveImage,
+    "BK Save Text File": BKSaveTextFile,
     "BK Simple Lora Loader": BKSimpleLoraLoader,
+    "BK String Splitter": BKStringSplitter,
+    "BK TSV Header Formatter": BKTSVHeaderFormatter,
+    "BK TSV Loader": BKTSVFileLoader,
+    "BK TSV Prompt Reader": BKTSVPromptReader,
+    "BK TSV Random Prompt": BKTSVRandomPrompt,
+    "BK TSV String Parser": BKTSVStringParser,
+    "BK TSV Tag Replacer": BKTSVTagReplacer,
+    "BK Write Text File": BKWriteTextFile,
+    "Convert To UTF8": ToUTF8,
+    "Get Larger Value": BKGetLargerValue,
+    "Ollama Connectivity Data": JSONExtractor,
+    # "Multi LoRA Test Node": MultiLoRATestNode,
+    # "Single LoRA Test Node": SingleLoRATestNode,
 
 }
 
